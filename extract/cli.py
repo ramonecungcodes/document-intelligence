@@ -3,7 +3,8 @@
 
     python -m extract.cli run --only invoices --limit 20
     python -m extract.cli run --model qwen/qwen3.5-9b --limit 5
-    python -m extract.cli run --backend anthropic --model claude-opus-5 --limit 5
+    python -m extract.cli run --extractor anthropic --limit 5
+    python -m extract.cli config
     python -m extract.cli schema --type multi_bill_invoice     # no API call
 
 Predictions come out in the same shape as the corpus labels, so scoring them is:
@@ -13,9 +14,10 @@ Predictions come out in the same shape as the corpus labels, so scoring them is:
 `schema` prints the generated JSON Schema and the system prompt for a type without
 calling anything -- useful for seeing what the model is actually being asked for.
 
-The backend is configured from the environment (DI_BACKEND, DI_BASE_URL, DI_MODEL,
-DI_API_KEY); see .env.example. `--backend` and `--model` override it for one run,
-which is how the same corpus gets scored against two models.
+Which extractor runs, and how it is configured, both live in the manifest (di.toml):
+choose a plugin and its settings are in the same block. `config` shows what resolved
+and what every plugin accepts. `--extractor` and `--model` override for one run, which
+is how the same corpus gets scored against two models.
 """
 from __future__ import annotations
 
@@ -25,7 +27,9 @@ import os
 import sys
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
+from core import config as config_mod
 from core import doctypes
+from core.plugins import describe
 from eval.score import load_corpus
 from extract import schema as schema_mod
 from extract import backends
@@ -65,14 +69,15 @@ def run(args):
         print(f"  ... {len(jobs)} total")
         return 0
 
-    overrides = {"DI_BACKEND": args.backend, "DI_MODEL": args.model}
+    overrides = {"model": args.model}
     if args.abort_after:
         # Cap the HTTP call too, so a stalled request cannot outlive the budget it is
         # being measured against.
-        overrides["DI_TIMEOUT"] = str(args.abort_after)
+        overrides["timeout"] = args.abort_after
     if args.no_think:
-        overrides["DI_NO_THINK"] = "1"
-    backend = backends.from_env(overrides)
+        overrides["no_think"] = True
+    backend = backends.build(config=config_mod.load(args.config),
+                             plugin=args.extractor, overrides=overrides)
     budget = f" · abort past {args.abort_after}s/doc" if args.abort_after else ""
     print(f"{len(jobs)} documents · {backend.describe()} · "
           f"{args.concurrency} at a time{budget}")
@@ -124,10 +129,7 @@ def run(args):
     run_path = os.path.splitext(out_path)[0] + ".run.json"
     with open(run_path, "w", encoding="utf-8", newline="\n") as handle:
         json.dump({
-            "backend": backend.name,
-            "model": backend.model,
-            "no_think": getattr(backend, "no_think", False),
-            "endpoint": getattr(backend, "base_url", None),
+            "extractor": getattr(backend, "provenance", {"plugin": backend.name}),
             "corpus": corpus_root,
             "documents": len(jobs),
             "aborted": aborted or None,
@@ -156,6 +158,32 @@ def run(args):
     return 0
 
 
+def show_config(args):
+    """What the manifest resolves to, and what every plugin will accept."""
+    config = config_mod.load(args.config)
+    print(f"manifest: {config.path or '(none found; using defaults)'}")
+    print()
+    for slot in config_mod.SLOTS:
+        chosen = config.chosen(slot)
+        if chosen or slot == "extractor":
+            print(f"  {slot:<12} {chosen or '(unset)'}")
+    print()
+    for name, backend_cls in sorted(backends.BACKENDS.items()):
+        marker = "  <- selected" if name == (config.chosen("extractor") or "") else ""
+        print(f"--- extractor: {name}{marker}")
+        print(describe(name, backend_cls.SETTINGS))
+        block = config.block("extractor", name)
+        if block:
+            try:
+                resolved = config.settings("extractor", name, backend_cls.SETTINGS)
+                from core.plugins import redact
+                print("  resolved:", redact(resolved, backend_cls.SETTINGS))
+            except Exception as error:
+                print(f"  ERROR: {error}")
+        print()
+    return 0
+
+
 def show_schema(args):
     doctype = doctypes.REGISTRY.get(args.type)
     if doctype is None:
@@ -176,9 +204,9 @@ def main(argv=None):
     go.add_argument("--only", default="", help="comma-separated label stems")
     go.add_argument("--limit", type=int, default=0, help="first N documents per type")
     go.add_argument("--out", default=None, help=f"default: {REPORTS_DIR}/predictions.jsonl")
-    go.add_argument("--backend", default="", choices=["", "openai", "anthropic"],
-                    help="overrides DI_BACKEND")
-    go.add_argument("--model", default="", help="overrides DI_MODEL")
+    go.add_argument("--extractor", default="", help="which extractor plugin (see di.toml)")
+    go.add_argument("--model", default="", help="override the chosen plugin's model")
+    go.add_argument("--config", default="", help="path to the manifest (default: di.toml)")
     go.add_argument("--concurrency", type=int, default=4)
     go.add_argument("--abort-after", type=int, default=0, metavar="SECONDS",
                     help="stop the run if any single document takes longer than this")
@@ -189,10 +217,17 @@ def main(argv=None):
     show = sub.add_parser("schema", help="print the schema and prompt for a type")
     show.add_argument("--type", required=True)
 
+    conf = sub.add_parser("config", help="show the resolved manifest and every setting")
+    conf.add_argument("--config", default="")
+
     args = parser.parse_args(argv)
     args.only = [s.strip() for s in args.only.split(",") if s.strip()] or None \
         if hasattr(args, "only") else None
-    return run(args) if args.command == "run" else show_schema(args)
+    if args.command == "run":
+        return run(args)
+    if args.command == "config":
+        return show_config(args)
+    return show_schema(args)
 
 
 if __name__ == "__main__":

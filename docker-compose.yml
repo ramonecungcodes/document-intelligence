@@ -37,22 +37,20 @@ services:
     volumes:
       - ./data:/data:ro          # documents in
       - ./reports:/reports       # predictions out
+      - ./di.toml:/app/di.toml:ro   # edit the manifest without rebuilding
     environment:
       DI_DATASET_ROOT: /data
       DI_REPORTS_DIR: /reports
-      # Which model answers. Everything here comes from .env (see .env.example);
-      # switching between a local model and the Claude API is one variable.
-      DI_BACKEND: ${DI_BACKEND:-openai}
-      DI_BASE_URL: ${DI_BASE_URL:-http://host.docker.internal:1234/v1}
-      DI_MODEL: ${DI_MODEL:-}
-      DI_MAX_TOKENS: ${DI_MAX_TOKENS:-8000}
-      DI_TIMEOUT: ${DI_TIMEOUT:-600}
-      DI_EFFORT: ${DI_EFFORT:-high}
-      # Credentials come from the host environment and are never baked into the image.
-      DI_API_KEY: ${DI_API_KEY:-}
-      DI_BASIC_AUTH: ${DI_BASIC_AUTH:-}
+      DI_CONFIG: /app/di.toml
+      # Only secrets and per-run overrides live here. Everything else -- which plugin
+      # runs and how it is configured -- is in di.toml, where the two sit together.
+      DI_OPENAI_API_KEY: ${DI_OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+      # Namespaced per-plugin overrides, for a one-off run without editing di.toml.
+      DI_EXTRACTOR: ${DI_EXTRACTOR:-}
+      DI_OPENAI_MODEL: ${DI_OPENAI_MODEL:-}
+      DI_OPENAI_NO_THINK: ${DI_OPENAI_NO_THINK:-}
+      DI_ANTHROPIC_MODEL: ${DI_ANTHROPIC_MODEL:-}
     # Lets the container reach a model server running on the host. Docker Desktop
     # provides host.docker.internal already; this adds it on Linux too.
     extra_hosts:

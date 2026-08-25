@@ -22,6 +22,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from core.plugins import Setting
+
 DEFAULT_MAX_TOKENS = 8000
 DEFAULT_TIMEOUT = 600.0
 
@@ -122,13 +124,23 @@ def _price(model: str, usage: Usage) -> float:
 # ------------------------------------------------------------------ anthropic
 class AnthropicBackend:
     name = "anthropic"
+    SETTINGS = (
+        Setting("model", str, default="claude-opus-5",
+                help="Claude model id, e.g. claude-opus-5"),
+        Setting("effort", str, default="high",
+                help="low | medium | high | xhigh | max"),
+        Setting("max_tokens", int, default=DEFAULT_MAX_TOKENS),
+        Setting("api_key", str, secret=True,
+                help="falls back to ANTHROPIC_API_KEY or an `ant auth login` profile"),
+    )
 
-    def __init__(self, model: str, max_tokens: int, effort: str = "high", **_):
+    def __init__(self, model: str, max_tokens: int, effort: str = "high",
+                 api_key: str = "", **_):
         try:
             import anthropic
         except ImportError:
             raise SystemExit("pip install anthropic")
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
         if not (getattr(client, "api_key", None) or getattr(client, "auth_token", None)):
             raise SystemExit(
                 "No Anthropic credentials found. Set ANTHROPIC_API_KEY, or switch "
@@ -198,6 +210,27 @@ class OpenAIBackend:
     """
 
     name = "openai"
+    SETTINGS = (
+        # Not `required`: build() checks it separately so an unset model is answered
+        # with the endpoint's actual model list rather than a generic complaint.
+        Setting("model", str,
+                help="a model the endpoint serves; leave unset to be shown the list"),
+        Setting("base_url", str, default="http://host.docker.internal:1234/v1",
+                help="OpenAI-compatible endpoint. Inside a container, localhost is the "
+                     "container -- use host.docker.internal for a server on this machine"),
+        Setting("api_key", str, secret=True,
+                help="sent as Authorization: Bearer. Local servers ignore it"),
+        Setting("basic_auth", str, secret=True,
+                help="user:pass, for an endpoint behind HTTP Basic auth instead"),
+        Setting("max_tokens", int, default=DEFAULT_MAX_TOKENS,
+                help="reasoning models spend this thinking before they answer"),
+        Setting("timeout", float, default=DEFAULT_TIMEOUT, help="seconds per request"),
+        Setting("json_mode", str, default="auto",
+                help="auto | schema | prompt. auto falls back to schema-in-prompt when "
+                     "an endpoint accepts json_schema but returns nothing"),
+        Setting("no_think", bool, default=False,
+                help="disable chain-of-thought; extraction is transcription"),
+    )
 
     def __init__(self, model: str, max_tokens: int, base_url: str,
                  api_key: str = "", basic_auth: str = "", timeout: float = DEFAULT_TIMEOUT,
@@ -357,39 +390,55 @@ class OpenAIBackend:
 
 
 # ------------------------------------------------------------------ selection
-def from_env(overrides: Optional[dict] = None):
-    """Build the configured backend. Everything comes from the environment."""
-    env = dict(os.environ)
-    env.update({k: v for k, v in (overrides or {}).items() if v})
+BACKENDS = {"anthropic": AnthropicBackend, "openai": OpenAIBackend}
+ALIASES = {"openai-compatible": "openai", "lmstudio": "openai", "local": "openai",
+           "claude": "anthropic"}
 
-    kind = env.get("DI_BACKEND", "openai").strip().lower()
-    max_tokens = int(env.get("DI_MAX_TOKENS") or DEFAULT_MAX_TOKENS)
 
-    if kind == "anthropic":
-        return AnthropicBackend(
-            model=env.get("DI_MODEL") or "claude-opus-5",
-            max_tokens=max_tokens,
-            effort=env.get("DI_EFFORT", "high"),
-        )
-    if kind in ("openai", "openai-compatible", "lmstudio", "local"):
-        base_url = env.get("DI_BASE_URL") or "http://host.docker.internal:1234/v1"
-        model = env.get("DI_MODEL", "").strip()
-        backend = OpenAIBackend(
-            model=model or "unset",
-            max_tokens=max_tokens,
-            base_url=base_url,
-            api_key=env.get("DI_API_KEY", ""),
-            basic_auth=env.get("DI_BASIC_AUTH", ""),
-            timeout=float(env.get("DI_TIMEOUT") or DEFAULT_TIMEOUT),
-            json_mode=env.get("DI_JSON_MODE", "auto").strip().lower(),
-            no_think=str(env.get("DI_NO_THINK", "")).strip().lower() in ("1", "true", "yes"),
-        )
-        if not model:
-            names = backend.available_models()
-            listing = "\n".join(f"  {n}" for n in names) if names else \
-                "  (could not reach the endpoint to list them)"
-            raise SystemExit(
-                f"DI_MODEL is not set. Models available at {base_url}:\n{listing}"
-            )
-        return backend
-    raise SystemExit(f"unknown DI_BACKEND {kind!r}; use 'openai' or 'anthropic'")
+def build(config=None, plugin: str = "", overrides=None):
+    """Construct the configured extractor backend.
+
+    The plugin is chosen once -- in the manifest, or by an explicit override -- and its
+    settings come from its own block. Nothing else has to be hunted down.
+    """
+    from core import config as config_mod
+    from core.plugins import SettingsError, cross_plugin_hint
+
+    config = config or config_mod.load()
+    chosen = (config.chosen("extractor", plugin) or "openai").strip().lower()
+    chosen = ALIASES.get(chosen, chosen)
+    if chosen not in BACKENDS:
+        raise SystemExit(
+            f"unknown extractor {chosen!r}; available: {', '.join(sorted(BACKENDS))}")
+
+    backend_cls = BACKENDS[chosen]
+    try:
+        settings = config.settings("extractor", chosen, backend_cls.SETTINGS, overrides)
+    except SettingsError as error:
+        message = str(error)
+        # If the key is real but belongs to the other backend, say which one.
+        for line in message.splitlines():
+            if " has no setting " in line:
+                key = line.split(" has no setting ")[1].strip().rstrip(".").strip("'\"")
+                others = {n: c.SETTINGS for n, c in BACKENDS.items() if n != chosen}
+                hint = cross_plugin_hint(key, others)
+                if hint:
+                    message += f"\n  {hint}"
+                break
+        raise SystemExit(f"configuration error: {message}")
+
+    if chosen == "openai" and not settings.get("model"):
+        probe = OpenAIBackend(model="unset", **{k: v for k, v in settings.items()
+                                                if k != "model"})
+        names = probe.available_models()
+        listing = "\n".join(f"  {n}" for n in names) if names else \
+            "  (could not reach the endpoint to list them)"
+        raise SystemExit(
+            f"no model set for the openai extractor. Available at "
+            f"{settings['base_url']}:\n{listing}")
+
+    backend = backend_cls(**settings)
+    backend.settings = settings
+    backend.provenance = config.provenance("extractor", chosen, backend_cls.SETTINGS,
+                                           settings)
+    return backend

@@ -1,0 +1,29 @@
+# DocumentIntelligence pipeline manifest.
+#
+# Which plugin fills each stage, and how each one is configured. Choosing a plugin and
+# configuring it happen in the same place, so there is nothing to hunt for afterwards.
+#
+# Committable by design: no secrets here, only ${VAR} references resolved from the
+# environment at load. Settings can also be overridden per plugin with a namespaced
+# variable -- DI_OPENAI_MODEL, DI_ANTHROPIC_EFFORT -- or by a command-line flag.
+
+[pipeline]
+extractor = "openai"
+
+# ------------------------------------------------------------------ extractors
+
+[extractors.openai]
+# Anything speaking OpenAI chat-completions: LM Studio, Ollama, vLLM, llama.cpp.
+base_url = "https://ai.ramonecung.com/v1"
+model = "qwen/qwen3-vl-8b"
+api_key = "${DI_OPENAI_API_KEY}"
+max_tokens = 8000
+timeout = 600
+json_mode = "auto"
+no_think = false
+
+[extractors.anthropic]
+model = "claude-opus-5"
+effort = "high"
+max_tokens = 8000
+api_key = "${ANTHROPIC_API_KEY}"
