@@ -1,0 +1,8 @@
+# Keep the build context to the generator's own files
+.git/
+.gitignore
+data/
+**/augraphy_cache/
+**/__pycache__/
+*.md
+docker-compose.yml

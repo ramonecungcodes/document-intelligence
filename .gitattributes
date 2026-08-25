@@ -1,0 +1,10 @@
+# The host is Windows, the container is Linux. Normalise to LF in the repo so the
+# two never disagree and so diffs stay free of line-ending churn.
+* text=auto eol=lf
+
+# Binary: never touch
+*.pdf   binary
+*.png   binary
+*.jpg   binary
+*.zip   binary
+*.ttf   binary

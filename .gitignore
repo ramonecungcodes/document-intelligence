@@ -1,0 +1,24 @@
+# Generated corpus -- regenerable from a seed, never committed.
+# Keep the directory itself so the compose bind mount exists on a fresh clone.
+/data/*
+!/data/.gitkeep
+tools/document-generator/augraphy_cache/
+**/augraphy_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Local config and secrets
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
