@@ -1,0 +1,27 @@
+# DocumentIntelligence
+#
+# The generator is on-demand tooling, not a service. It sits behind the "tools"
+# profile so `docker compose up` ignores it entirely; `docker compose run` starts
+# it for one job and throws the container away.
+#
+#   docker compose run --rm document-generator build
+#   docker compose run --rm document-generator build --degrade --levels medium,photo
+#   docker compose run --rm document-generator degrade --out /data/irregular --levels fax
+#
+# Application services (web, worker, db) get added here as they are built.
+
+services:
+  document-generator:
+    build:
+      context: ./tools/document-generator
+    image: di-document-generator
+    container_name: di-document-generator
+    profiles: ["tools"]          # excluded from `docker compose up`
+    volumes:
+      - ./data:/data             # the corpus lands here on the host
+    environment:
+      DI_DATASET_ROOT: /data
+    # Chromium is happier with more than the default 64MB of shared memory.
+    shm_size: "1gb"
+    # Nothing to serve and nothing to wait for: run it, let it exit.
+    restart: "no"
