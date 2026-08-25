@@ -60,6 +60,7 @@ the correction store *is* a fine-tuning dataset, generated as a by-product of no
 
 ```
 core/                       shared domain code: field normalisation, type registry
+extract/                    the extractor: PDF text -> schema-constrained fields
 eval/                       scoring, the report format, the CLI
 tests/                      unit tests, fixtured off the committed samples
 tools/document-generator/   synthetic evaluation corpus (Docker; see its README)
@@ -96,11 +97,12 @@ flattering themselves:
 docker compose run --rm --name di-document-generator document-generator build --degrade --levels light,medium,heavy,photo,fax
 ```
 
-Then score an extractor against it:
+Then extract and score:
 
 ```bash
-docker compose run --rm evaluator selftest
-docker compose run --rm evaluator score --predictions /reports/preds.jsonl
+export ANTHROPIC_API_KEY=...
+docker compose run --rm extractor run --only invoices --limit 20
+docker compose run --rm evaluator score --predictions /reports/predictions.jsonl
 ```
 
 Both services sit behind the `tools` profile, so `docker compose up` starts nothing.
@@ -141,6 +143,45 @@ Reports carry provenance and cost slots from version 1 even though nothing popul
 them yet. A report that cannot say which corpus, model and knowledge pack produced it
 is unattributable, and the calibration curve, the learning curve and the extractor
 ablation are all comparisons across those axes.
+
+## Extracting
+
+`extract/` is the current extractor and it is deliberately the crudest thing that can
+produce a number: read the PDF's text layer, send it once with a schema, keep what
+comes back. No tools, no repair loop, no confidence, no retries on content. Every
+later phase has to justify itself against whatever this scores.
+
+The schema is generated from `core/doctypes.py` — the same declaration the scorer
+grades against — so the extractor and the evaluator cannot drift into disagreeing
+about what an invoice is. Every field is nullable and required, which lets the model
+say "not on the document" without inventing a value or dropping the key. That matters
+more than it sounds: a W-9 carries an SSN or an EIN and never both, and the defective
+corpus empties fields on purpose.
+
+Two things it deliberately does not do:
+
+- **It does not classify.** The document type comes from the corpus. Phase 1 measures
+  whether a model can read fields off a layout it has never seen; classification is a
+  separate risk with its own phase, and mixing them would make a bad number impossible
+  to attribute.
+- **It does not correct the document.** The prompt tells the model to transcribe a
+  total even when it disagrees with the line items. Detecting that disagreement is the
+  validators' job, and an extractor that quietly fixes documents destroys the defect
+  detection signal.
+
+Scanned documents come back empty, because they have no text layer to read. That is
+not a bug to paper over — it is the measured size of the gap OCR has to close, and the
+reason normalisation becomes its own pipeline stage.
+
+Runs report what they cost:
+
+```
+  extracted 20/20
+  41,203 in / 8,914 out  ·  $0.43  ·  96s of model time
+```
+
+`python -m extract.cli schema --type multi_bill_invoice` prints the generated schema
+and system prompt without calling anything.
 
 ## Why the corpus comes first
 

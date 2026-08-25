@@ -27,6 +27,25 @@ services:
     shm_size: "1gb"
     restart: "no"
 
+  extractor:
+    build:
+      context: .
+    image: di-app
+    container_name: di-extractor
+    profiles: ["tools"]
+    entrypoint: ["python", "-m", "extract.cli"]
+    volumes:
+      - ./data:/data:ro          # documents in
+      - ./reports:/reports       # predictions out
+    environment:
+      DI_DATASET_ROOT: /data
+      DI_REPORTS_DIR: /reports
+      DI_MODEL: ${DI_MODEL:-claude-opus-5}
+      # Supplied by the host; never baked into the image.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+    restart: "no"
+
   evaluator:
     build:
       context: .

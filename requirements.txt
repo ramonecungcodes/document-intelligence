@@ -1,4 +1,4 @@
-# The application. Deliberately thin: the scorer needs nothing beyond the standard
-# library, so difflib does the fuzzy matching and datetime does the date parsing.
-# Web, worker and pipeline dependencies land here as those phases are built.
-pytest>=8.0        # tests only; kept in the image so `compose run evaluator test` works
+# The application.
+anthropic>=0.70      # extraction via the Messages API
+pymupdf>=1.24        # PDF text layer (and, later, token bounding boxes)
+pytest>=8.0          # tests only; kept in the image so tests run in the container

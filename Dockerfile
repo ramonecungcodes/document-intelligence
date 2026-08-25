@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY core/ ./core/
 COPY eval/ ./eval/
+COPY extract/ ./extract/
 COPY tests/ ./tests/
 
 ENTRYPOINT ["python", "-m", "eval.cli"]
