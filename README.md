@@ -102,4 +102,8 @@ detection accuracy and extraction accuracy can be scored independently, per degr
 profile rather than as one blended number.
 
 See [`tools/document-generator/README.md`](tools/document-generator/README.md) for the
-label schemas, the defect catalogue and the degradation profiles.
+label schemas, the defect catalogue and the degradation profiles. Six sample
+documents are committed under
+[`tools/document-generator/samples/`](tools/document-generator/samples/) — including a
+multi-bill invoice, a defective one, and the same document degraded to an image-only
+scan — so the output can be inspected without running anything.

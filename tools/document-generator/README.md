@@ -20,58 +20,43 @@ invented — so it is safe to share, commit, or publish.
 
 ---
 
-## Contents
+## What it produces
 
-| Type | Count | How they vary |
-|------|-------|----------------|
-| Invoices | 56 (7 companies × 8) | 3 structural layouts, each of 7 companies has its own brand color, font, and logo/monogram |
-| Purchase orders | 56 (7 companies × 8) | 2 structural layouts, 7 brands |
-| Resumes | 40 | 8 distinct layouts (classic, left/right sidebar, header-band, minimalist, compact, timeline, boxed cards) across 4 roles: **management, developer, HR, RPA developer** |
-| Forms | 160 | onboarding 40 · insurance claim 40 · government 40 (**W-9** 20 + **W-4** 20) · loan application 40. Each in 3 layout variants (single-column label:value, two-column boxed cells, official bordered table) |
-| Multi-bill invoices | 40 | one invoice, **2–4 separately-payable services** (utility, telecom, facilities-by-site, freight-by-shipment, staffing-by-cost-centre). 5 vendors × 3 layouts |
+Five document types, each in several structural layouts with their own fonts and
+brand colours, so a model is tested on formats it has not seen rather than one rigid
+template. Counts are set by flags (`--invoices-per-company`, `--multibill`, ...);
+`build` with no arguments produces 352 PDFs.
 
-Total: **352 PDFs**. Layouts, fonts, and colors deliberately differ so a
-model is tested on formats it has not seen, not one rigid template.
+| Type | Varies by |
+|------|-----------|
+| Invoices | 3 layouts × 7 vendor brands |
+| Purchase orders | 2 layouts × 7 brands |
+| Resumes | 8 layouts × 4 roles (management, developer, HR, RPA developer) |
+| Forms | 3 layouts × 5 kinds (onboarding, insurance claim, W-9, W-4, loan) |
+| Multi-bill invoices | 3 layouts × 5 vendors, 2–4 separately-payable services each |
 
----
+Each type is written to its own directory under the corpus root (`/data` in the
+container, `./data` on the host), with ground truth in `labels/<type>.json`. Every
+label carries a `file` field pointing at its PDF, so model output joins to truth on
+that key. `--irregular` writes a parallel defective corpus, and `degrade` writes
+image-only scans; both mirror the same layout.
 
-## Folder layout
+## Samples
 
-Inside the container the corpus root is `/data`, mounted from `./data` on the host:
+Six documents are committed under [`samples/`](samples/) so the schemas below can be
+read against real output without building anything:
 
-```
-data/
-├── invoices/               56 invoice PDFs
-├── purchase_orders/        56 purchase-order PDFs
-├── resumes/                40 resume PDFs
-├── forms/                  160 form PDFs (onboarding / claim / w9 / w4 / loan)
-├── multi_bill_invoices/    40 invoices carrying several payable services each
-├── labels/                 ground truth (one JSON array per type)
-│   ├── invoices.json
-│   ├── purchase_orders.json
-│   ├── resumes.json
-│   ├── forms.json
-│   └── multi_bill_invoices.json
-├── source_html/            the HTML each PDF was rendered from (re-render source)
-│   ├── invoices/  purchase_orders/  resumes/  forms/  multi_bill_invoices/
-├── degraded/               image-only scans (see below), written on demand
-└── irregular/              the defective set, same shape as above
-```
+| Sample | Shows |
+|--------|-------|
+| `invoice.pdf` | the baseline single-vendor case |
+| `multi-bill-invoice.pdf` | 3 separately-payable services, each with its own account number and total |
+| `multi-bill-invoice.defective.pdf` | `missing_section_account` + `section_total_mismatch`, both visible on the page |
+| `multi-bill-invoice.scanned.pdf` | the same document at `medium` degradation — **no text layer**, so it forces OCR |
+| `form-w9.pdf` | a government form with checkbox and TIN fields |
+| `resume.pdf` | free-form layout with nested work history |
 
-The code lives in `tools/document-generator/`:
-
-```
-cli.py            subcommand entrypoint (generate / render / degrade / build)
-generate.py       builds the HTML + labels (seeded, reproducible)
-render_pdfs.py    renders HTML → PDF via headless Chromium
-degrade.py        turns rendered PDFs into image-only scans/photos
-Dockerfile        python:3.12-slim + chromium + metric-compatible fonts
-```
-
-Each labels entry carries a `file` field (e.g. `"invoices/northwind_INV-20261007.pdf"`)
-that points at the matching PDF, so you can join a model's output to ground truth.
-
----
+Each `.pdf` sits next to its `.json` ground truth, lifted verbatim from the corpus
+labels; the only field altered is `file`, repointed at the sample's own name.
 
 ## Label schemas
 
@@ -235,6 +220,12 @@ Flags after the subcommand pass straight through to the underlying script, so
 Paths given to the container are container paths: the corpus root is `/data`, which
 is `./data` on the host.
 
+> **On Git Bash / MSYS (Windows):** an absolute container path passed as an argument
+> gets rewritten to a Windows path before Docker sees it, so `--out /data/irregular`
+> silently becomes something like `/tmp/C:/Program Files/Git/data/irregular` and the
+> command reports `0/0` files. Prefix the command with `MSYS_NO_PATHCONV=1`, or use
+> PowerShell. Subcommands that take no path argument are unaffected.
+
 ### A held-out set the model has never seen
 
 The generator is **seeded**: the same seed reproduces the same corpus exactly; a new
@@ -394,3 +385,5 @@ there rather than mixing renders across platforms.
   host will drop an `augraphy_cache/` next to them; it is gitignored.
 - `data/` is gitignored in full. The corpus is regenerable from a seed, so it is never
   committed.
+- `samples/` is the exception and *is* committed: six documents, ~700 KB, so the label
+  schemas above can be checked against real output without building anything.

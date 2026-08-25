@@ -1,0 +1,46 @@
+{
+  "name": "Rosa Park",
+  "email": "rosa.park@email.com",
+  "phone": "(209) 314-2232",
+  "location": "Boise, ID",
+  "target_role": "Manager",
+  "current_title": "Program Manager",
+  "years_experience": 6,
+  "skills": [
+    "P&L",
+    "Team Leadership",
+    "Hiring",
+    "Change Management",
+    "Budgeting",
+    "Roadmapping",
+    "Agile/Scrum",
+    "Jira"
+  ],
+  "certifications": [
+    "PMP",
+    "ITIL Foundation"
+  ],
+  "file": "resume.pdf",
+  "doc_type": "resume",
+  "layout": 0,
+  "education": {
+    "degree": "B.S. Information Systems",
+    "school": "Georgia Tech",
+    "year": 2020
+  },
+  "work_history": [
+    {
+      "company": "Atlas Construction",
+      "title": "Program Manager",
+      "start_year": 2024,
+      "end_year": "Present"
+    },
+    {
+      "company": "Fairfield Utilities",
+      "title": "Engineering Manager",
+      "start_year": 2021,
+      "end_year": 2024
+    }
+  ],
+  "irregularities": []
+}
