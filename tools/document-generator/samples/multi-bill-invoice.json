@@ -1,0 +1,125 @@
+{
+  "file": "multi-bill-invoice.pdf",
+  "doc_type": "multi_bill_invoice",
+  "layout": 0,
+  "vendor_name": "Meridian Telecom Partners",
+  "invoice_number": "MTP-20267006",
+  "invoice_date": "2026-03-20",
+  "due_date": "2026-04-19",
+  "bill_to": "Cascade Analytics",
+  "master_account": "BTN-MASTER-63545",
+  "terms": "Net 30",
+  "currency": "USD",
+  "section_count": 3,
+  "sections": [
+    {
+      "section_index": 0,
+      "service_type": "Business Voice Lines",
+      "service_code": "VOX",
+      "account_number": "BTN-378535",
+      "reference_label": "Circuit",
+      "reference_number": "VOX/28643/DS1",
+      "service_location": null,
+      "cost_center": "CC-2040 Operations",
+      "service_period_start": "2026-02-10",
+      "service_period_end": "2026-03-14",
+      "line_items": [
+        {
+          "description": "Business line, per line/mo",
+          "quantity": 21,
+          "unit_price": 37.44,
+          "amount": 786.24
+        },
+        {
+          "description": "Voicemail seat, per user/mo",
+          "quantity": 7,
+          "unit_price": 4.7,
+          "amount": 32.9
+        },
+        {
+          "description": "Long distance, per minute",
+          "quantity": 18,
+          "unit_price": 0.04,
+          "amount": 0.72
+        }
+      ],
+      "subtotal": 819.86,
+      "tax": 0.0,
+      "total": 819.86
+    },
+    {
+      "section_index": 1,
+      "service_type": "Equipment Lease",
+      "service_code": "EQP",
+      "account_number": "BTN-559023",
+      "reference_label": "Circuit",
+      "reference_number": "EQP/20543/DS1",
+      "service_location": null,
+      "cost_center": "CC-1010 Facilities",
+      "service_period_start": "2026-02-18",
+      "service_period_end": "2026-03-18",
+      "line_items": [
+        {
+          "description": "On-site maintenance, per hr",
+          "quantity": 4,
+          "unit_price": 127.81,
+          "amount": 511.24
+        },
+        {
+          "description": "Handset lease, per unit",
+          "quantity": 10,
+          "unit_price": 11.6,
+          "amount": 116.0
+        },
+        {
+          "description": "Managed router lease",
+          "quantity": 9,
+          "unit_price": 70.02,
+          "amount": 630.18
+        }
+      ],
+      "subtotal": 1257.42,
+      "tax": 75.45,
+      "total": 1332.87
+    },
+    {
+      "section_index": 2,
+      "service_type": "Dedicated Data Circuit",
+      "service_code": "DAT",
+      "account_number": "BTN-901909",
+      "reference_label": "Circuit",
+      "reference_number": "DAT/98117/DS1",
+      "service_location": null,
+      "cost_center": "CC-5005 Administration",
+      "service_period_start": "2026-02-08",
+      "service_period_end": "2026-03-12",
+      "line_items": [
+        {
+          "description": "Circuit port fee",
+          "quantity": 3,
+          "unit_price": 73.74,
+          "amount": 221.22
+        },
+        {
+          "description": "Static IP block /29",
+          "quantity": 22,
+          "unit_price": 41.72,
+          "amount": 917.84
+        },
+        {
+          "description": "Fiber 500 Mbps, per month",
+          "quantity": 19,
+          "unit_price": 631.36,
+          "amount": 11995.84
+        }
+      ],
+      "subtotal": 13134.9,
+      "tax": 0.0,
+      "total": 13134.9
+    }
+  ],
+  "subtotal": 15212.18,
+  "tax": 75.45,
+  "total": 15287.63,
+  "irregularities": []
+}

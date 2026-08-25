@@ -1,0 +1,151 @@
+{
+  "file": "multi-bill-invoice.defective.pdf",
+  "doc_type": "multi_bill_invoice",
+  "layout": 1,
+  "vendor_name": "Summit Workforce Group",
+  "invoice_number": "SWG-20267004",
+  "invoice_date": "2026-04-29",
+  "due_date": "2026-06-13",
+  "bill_to": "Elmwood Property Group",
+  "master_account": "CTR-MASTER-65723",
+  "terms": "Net 45",
+  "currency": "USD",
+  "section_count": 4,
+  "sections": [
+    {
+      "section_index": 0,
+      "service_type": "Warehouse Temps",
+      "service_code": "WHT",
+      "account_number": "CTR-559023",
+      "reference_label": "Contract",
+      "reference_number": "C-20543",
+      "service_location": "753 Franklin St, Richmond, VA 23219",
+      "cost_center": "CC-6180 Manufacturing",
+      "service_period_start": "2026-03-30",
+      "service_period_end": "2026-04-27",
+      "line_items": [
+        {
+          "description": "Background screening, per hire",
+          "quantity": 4,
+          "unit_price": 53.94,
+          "amount": 215.76
+        },
+        {
+          "description": "Overtime hours, per hr",
+          "quantity": 10,
+          "unit_price": 42.2,
+          "amount": 422.0
+        },
+        {
+          "description": "Regular hours, per hr",
+          "quantity": 9,
+          "unit_price": 26.51,
+          "amount": 238.59
+        }
+      ],
+      "subtotal": 876.35,
+      "tax": 52.58,
+      "total": 928.93
+    },
+    {
+      "section_index": 1,
+      "service_type": "IT Support Contractors",
+      "service_code": "ITS",
+      "account_number": "CTR-901909",
+      "reference_label": "Contract",
+      "reference_number": "C-98117",
+      "service_location": "9541 Maple Ave, Raleigh, NC 27601",
+      "cost_center": "CC-3300 Engineering",
+      "service_period_start": "2026-03-20",
+      "service_period_end": "2026-04-18",
+      "line_items": [
+        {
+          "description": "Regular hours, per hr",
+          "quantity": 22,
+          "unit_price": 103.11,
+          "amount": 2268.42
+        },
+        {
+          "description": "On-call premium, per week",
+          "quantity": 19,
+          "unit_price": 273.94,
+          "amount": 5204.86
+        }
+      ],
+      "subtotal": 7473.28,
+      "tax": 0.0,
+      "total": 7473.28
+    },
+    {
+      "section_index": 2,
+      "service_type": "Engineering Contractors",
+      "service_code": "ENG",
+      "account_number": "CTR-209680",
+      "reference_label": "Contract",
+      "reference_number": "C-31079",
+      "service_location": "6844 Pinecrest Ct, Portland, OR 97204",
+      "cost_center": "CC-8090 IT",
+      "service_period_start": "2026-03-20",
+      "service_period_end": "2026-04-20",
+      "line_items": [
+        {
+          "description": "Overtime hours, per hr",
+          "quantity": 21,
+          "unit_price": 167.37,
+          "amount": 3514.77
+        },
+        {
+          "description": "Regular hours, per hr",
+          "quantity": 3,
+          "unit_price": 100.09,
+          "amount": 300.27
+        },
+        {
+          "description": "Agency fee",
+          "quantity": 14,
+          "unit_price": 333.33,
+          "amount": 4666.62
+        }
+      ],
+      "subtotal": 8481.66,
+      "tax": 699.74,
+      "total": 9013.77
+    },
+    {
+      "section_index": 3,
+      "service_type": "Administrative Support",
+      "service_code": "ADM",
+      "account_number": "",
+      "reference_label": "Contract",
+      "reference_number": "C-10150",
+      "service_location": "8989 Sunset Way, Mesa, AZ 85201",
+      "cost_center": "CC-7250 Retail Ops",
+      "service_period_start": "2026-03-22",
+      "service_period_end": "2026-04-23",
+      "line_items": [
+        {
+          "description": "Regular hours, per hr",
+          "quantity": 3,
+          "unit_price": 30.72,
+          "amount": 92.16
+        },
+        {
+          "description": "Temp-to-hire conversion fee",
+          "quantity": 11,
+          "unit_price": 1050.7,
+          "amount": 11557.7
+        }
+      ],
+      "subtotal": 11649.86,
+      "tax": 698.99,
+      "total": 12348.85
+    }
+  ],
+  "subtotal": 28481.15,
+  "tax": 1451.31,
+  "total": 29764.83,
+  "irregularities": [
+    "missing_section_account",
+    "section_total_mismatch"
+  ]
+}

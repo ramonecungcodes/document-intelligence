@@ -1,0 +1,42 @@
+{
+  "file": "invoice.pdf",
+  "doc_type": "invoice",
+  "vendor_name": "Northwind Components LLC",
+  "invoice_number": "INV-20261000",
+  "invoice_date": "2026-03-29",
+  "due_date": "2026-04-13",
+  "po_number": "PO-48928",
+  "bill_to": "Elmwood Property Group",
+  "terms": "Net 15",
+  "currency": "USD",
+  "subtotal": 418.07,
+  "tax": 0.0,
+  "total": 418.07,
+  "line_items": [
+    {
+      "description": "Stainless washer kit",
+      "quantity": 4,
+      "unit_price": 19.53,
+      "amount": 78.12
+    },
+    {
+      "description": "Cable gland IP68",
+      "quantity": 18,
+      "unit_price": 6.22,
+      "amount": 111.96
+    },
+    {
+      "description": "Hydraulic fitting 1/2 in",
+      "quantity": 14,
+      "unit_price": 9.79,
+      "amount": 137.06
+    },
+    {
+      "description": "Bearing assembly 6204",
+      "quantity": 3,
+      "unit_price": 30.31,
+      "amount": 90.93
+    }
+  ],
+  "irregularities": []
+}

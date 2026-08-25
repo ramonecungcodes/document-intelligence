@@ -1,0 +1,16 @@
+{
+  "file": "form-w9.pdf",
+  "doc_type": "form",
+  "form_type": "w9",
+  "layout": 2,
+  "name": "Brandon Alvarez",
+  "business_name": "",
+  "tax_classification": "S Corporation",
+  "address": "9546 Oak Street",
+  "city_state_zip": "Tampa, FL 33602",
+  "tin_type": "SSN",
+  "ssn": "145-65-1027",
+  "ein": "",
+  "requester": "Onyx Software Labs",
+  "irregularities": []
+}
