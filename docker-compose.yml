@@ -1,14 +1,16 @@
 # DocumentIntelligence
 #
-# The generator is on-demand tooling, not a service. It sits behind the "tools"
-# profile so `docker compose up` ignores it entirely; `docker compose run` starts
-# it for one job and throws the container away.
+# Two images. `di-app` is the application -- today it runs the evaluation CLI, and
+# the web server and worker become further services off this same build, since they
+# share a codebase and a dependency set. `di-document-generator` stays separate: it
+# needs Chromium and the augraphy stack, ~2.4 GB the application has no use for.
+#
+# Both sit behind the "tools" profile, so `docker compose up` starts nothing. They
+# are on-demand: `docker compose run` gives them one job and discards the container.
 #
 #   docker compose run --rm document-generator build
-#   docker compose run --rm document-generator build --degrade --levels medium,photo
-#   docker compose run --rm document-generator degrade --out /data/irregular --levels fax
-#
-# Application services (web, worker, db) get added here as they are built.
+#   docker compose run --rm evaluator selftest
+#   docker compose run --rm evaluator score --predictions /reports/preds.jsonl
 
 services:
   document-generator:
@@ -16,12 +18,27 @@ services:
       context: ./tools/document-generator
     image: di-document-generator
     container_name: di-document-generator
-    profiles: ["tools"]          # excluded from `docker compose up`
+    profiles: ["tools"]
     volumes:
       - ./data:/data             # the corpus lands here on the host
     environment:
       DI_DATASET_ROOT: /data
     # Chromium is happier with more than the default 64MB of shared memory.
     shm_size: "1gb"
-    # Nothing to serve and nothing to wait for: run it, let it exit.
+    restart: "no"
+
+  evaluator:
+    build:
+      context: .
+    image: di-app
+    container_name: di-evaluator
+    profiles: ["tools"]
+    volumes:
+      # The corpus is input. Mounting it read-only makes "eval quietly mutated the
+      # ground truth" structurally impossible rather than merely unlikely.
+      - ./data:/data:ro
+      - ./reports:/reports
+    environment:
+      DI_DATASET_ROOT: /data
+      DI_REPORTS_DIR: /reports
     restart: "no"

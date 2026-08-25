@@ -59,14 +59,25 @@ the correction store *is* a fine-tuning dataset, generated as a by-product of no
 ## Repo layout
 
 ```
+core/                       shared domain code: field normalisation, type registry
+eval/                       scoring, the report format, the CLI
+tests/                      unit tests, fixtured off the committed samples
 tools/document-generator/   synthetic evaluation corpus (Docker; see its README)
 data/                       generated corpus — gitignored, regenerable from a seed
-docker-compose.yml          services; the generator is on-demand tooling
+reports/                    score reports — gitignored
+docker-compose.yml          on-demand services: document-generator, evaluator
 ```
 
-Application packages (`core/`, `plugins/`, `web/`, `worker/`, `eval/`, `packs/`) land
-here as they are built. They are deliberately not scaffolded yet — empty directories
-are not structure.
+`core/normalize.py` holds the field comparison primitives — is `03/29/2026` the same
+date as `2026-03-29`, is `Acme, Inc.` the same vendor as `Acme Inc`. They live in
+`core` rather than `eval` because the validator plugins will ask exactly those
+questions in production. One implementation, so evaluation and the pipeline can never
+drift into disagreeing about whether a field is correct.
+
+The remaining application packages (`plugins/`, `web/`, `worker/`, `packs/`) land here
+as they are built, as further services off the same `di-app` image — they share a
+codebase and a dependency set, so they share a build. The generator stays a separate
+image because Chromium and the augraphy stack are ~2.4 GB the application never needs.
 
 ## Getting started
 
@@ -85,8 +96,51 @@ flattering themselves:
 docker compose run --rm --name di-document-generator document-generator build --degrade --levels light,medium,heavy,photo,fax
 ```
 
-The generator is behind the `tools` profile, so `docker compose up` ignores it. It is
-on-demand only; `run --rm` starts it for one job and throws the container away.
+Then score an extractor against it:
+
+```bash
+docker compose run --rm evaluator selftest
+docker compose run --rm evaluator score --predictions /reports/preds.jsonl
+```
+
+Both services sit behind the `tools` profile, so `docker compose up` starts nothing.
+They are on-demand; `run --rm` gives one a job and throws the container away.
+
+> **On Git Bash / MSYS (Windows):** an absolute container path passed as an argument is
+> rewritten to a Windows path before Docker sees it, so `--corpus /data/degraded` fails
+> looking for a directory under `C:/Program Files/Git`. Prefix with `MSYS_NO_PATHCONV=1`,
+> or use PowerShell. Commands that take no path argument are unaffected.
+
+## Measuring it
+
+`eval/` grades predicted extractions against the corpus and writes a versioned JSON
+report; the CLI is one renderer of it, and the `/eval` screen will be another.
+
+Two baselines anchor the harness, and both are commands:
+
+- **`selftest`** feeds the ground truth back in as predictions. It must score exactly
+  `1.000`. If it ever drops below that, a normaliser is wrong and every number the
+  project reports afterwards is quietly understated by a bug nobody would go looking
+  for.
+- **`score --predictions empty`** grades an extractor that ran and found nothing.
+
+That second one is more interesting than it sounds. It does not score zero: the
+defective corpus deliberately empties fields, and an extractor returning nothing
+"agrees" about those. So the report carries accuracy **excluding blank fields**
+alongside the raw number, and that is the honest one to quote — on the current corpus
+the empty extractor scores `0.007` raw and `0.000` non-blank.
+
+Everything is sliced by document type, layout and degradation profile rather than
+reported as one number, because a blended average hides exactly what you need to know:
+that you are fine on clean invoices and failing on faxed forms. Repeating groups —
+invoice line items, the sections of a multi-bill invoice — get **row recall reported
+separately from field accuracy**, since missing an entire billable service is a
+different and worse failure than misreading one field inside a service you found.
+
+Reports carry provenance and cost slots from version 1 even though nothing populates
+them yet. A report that cannot say which corpus, model and knowledge pack produced it
+is unattributable, and the calibration curve, the learning curve and the extractor
+ablation are all comparisons across those axes.
 
 ## Why the corpus comes first
 
