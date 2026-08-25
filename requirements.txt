@@ -1,0 +1,4 @@
+# The application. Deliberately thin: the scorer needs nothing beyond the standard
+# library, so difflib does the fuzzy matching and datetime does the date parsing.
+# Web, worker and pipeline dependencies land here as those phases are built.
+pytest>=8.0        # tests only; kept in the image so `compose run evaluator test` works

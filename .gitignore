@@ -2,6 +2,8 @@
 # Keep the directory itself so the compose bind mount exists on a fresh clone.
 /data/*
 !/data/.gitkeep
+/reports/*
+!/reports/.gitkeep
 tools/document-generator/augraphy_cache/
 **/augraphy_cache/
 
