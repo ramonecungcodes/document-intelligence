@@ -1,0 +1,6 @@
+# generate.py and render_pdfs.py need none of this -- they are standard library
+# plus headless Chromium. Everything below is for degrade.py.
+pymupdf>=1.24        # rasterise PDFs; also the text/bbox reader the app will use
+pillow>=10.0         # image pipeline and the perspective transform
+augraphy>=8.2        # print/scan physics: ink bleed, dirty drum, faxify, lighting
+numpy>=1.26          # required by the augraphy engine
