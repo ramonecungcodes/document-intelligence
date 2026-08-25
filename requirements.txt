@@ -1,4 +1,5 @@
 # The application.
-anthropic>=0.70      # extraction via the Messages API
+anthropic>=0.70      # the Claude API backend
+openai>=1.40         # the OpenAI-compatible backend: LM Studio, Ollama, vLLM, ...
 pymupdf>=1.24        # PDF text layer (and, later, token bounding boxes)
 pytest>=8.0          # tests only; kept in the image so tests run in the container
