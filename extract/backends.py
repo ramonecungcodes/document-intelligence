@@ -201,7 +201,7 @@ class OpenAIBackend:
 
     def __init__(self, model: str, max_tokens: int, base_url: str,
                  api_key: str = "", basic_auth: str = "", timeout: float = DEFAULT_TIMEOUT,
-                 json_mode: str = "auto", **_):
+                 json_mode: str = "auto", no_think: bool = False, **_):
         try:
             from openai import OpenAI
         except ImportError:
@@ -229,10 +229,16 @@ class OpenAIBackend:
         self._mode = "schema" if json_mode in ("auto", "schema") else "prompt"
         self._downgraded = False
         self._lock = threading.Lock()
+        # Extraction is transcription, not reasoning: the fields are printed on the
+        # page. Thinking tokens are latency spent on a task that does not need them,
+        # and they give the model room to "correct" a document the prompt explicitly
+        # says to copy verbatim. Qwen-family templates take this switch.
+        self.no_think = no_think
 
     def describe(self) -> str:
+        thinking = " · no-think" if self.no_think else ""
         return (f"openai · {self.model} · {self.base_url} · auth {self.auth}"
-                f" · json {self.json_mode}")
+                f" · json {self.json_mode}{thinking}")
 
     def available_models(self):
         try:
@@ -256,6 +262,10 @@ class OpenAIBackend:
                 + " It must match this JSON Schema exactly:\n"
                 + json.dumps(schema)
             )
+        if self.no_think:
+            # The chat-template switch Qwen and friends read. Servers that do not
+            # recognise it ignore the field rather than failing the request.
+            kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
         started = time.time()
         response = self.client.chat.completions.create(
             model=self.model,
@@ -372,6 +382,7 @@ def from_env(overrides: Optional[dict] = None):
             basic_auth=env.get("DI_BASIC_AUTH", ""),
             timeout=float(env.get("DI_TIMEOUT") or DEFAULT_TIMEOUT),
             json_mode=env.get("DI_JSON_MODE", "auto").strip().lower(),
+            no_think=str(env.get("DI_NO_THINK", "")).strip().lower() in ("1", "true", "yes"),
         )
         if not model:
             names = backend.available_models()

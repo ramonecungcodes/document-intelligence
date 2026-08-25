@@ -70,6 +70,8 @@ def run(args):
         # Cap the HTTP call too, so a stalled request cannot outlive the budget it is
         # being measured against.
         overrides["DI_TIMEOUT"] = str(args.abort_after)
+    if args.no_think:
+        overrides["DI_NO_THINK"] = "1"
     backend = backends.from_env(overrides)
     budget = f" · abort past {args.abort_after}s/doc" if args.abort_after else ""
     print(f"{len(jobs)} documents · {backend.describe()} · "
@@ -124,6 +126,7 @@ def run(args):
         json.dump({
             "backend": backend.name,
             "model": backend.model,
+            "no_think": getattr(backend, "no_think", False),
             "endpoint": getattr(backend, "base_url", None),
             "corpus": corpus_root,
             "documents": len(jobs),
@@ -179,6 +182,8 @@ def main(argv=None):
     go.add_argument("--concurrency", type=int, default=4)
     go.add_argument("--abort-after", type=int, default=0, metavar="SECONDS",
                     help="stop the run if any single document takes longer than this")
+    go.add_argument("--no-think", action="store_true",
+                    help="disable chain-of-thought (overrides DI_NO_THINK)")
     go.add_argument("--dry-run", action="store_true", help="list the work, call nothing")
 
     show = sub.add_parser("schema", help="print the schema and prompt for a type")
