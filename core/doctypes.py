@@ -176,14 +176,20 @@ MULTI_BILL_INVOICE = DocType(
                            "e.g. M3947745 for a meter or MOB/76795/DS1 for a circuit. "
                            "Not the account number."),
                 Field("service_location", "text",
-                      help="Street address of the site this service is delivered to, "
-                           "only when the document shows one for this service. Many "
-                           "bills have no per-service site; return null rather than "
-                           "substituting a cost centre or the billing address."),
+                      help="Street address of the site this service is delivered to. "
+                           "Begin at the street number: a label such as SITE or "
+                           "LOCATION printed in front of it is not part of the "
+                           "address. Most bills show no per-service site at all -- if "
+                           "no street address appears in this service's block, return "
+                           "null. A cost centre, a service type or the billing address "
+                           "is not a service location; null is the right answer far "
+                           "more often than not."),
                 Field("cost_center", "text",
-                      help="The cost centre exactly as printed, both the code and the "
-                           "name that follows it, e.g. 'CC-4120 Logistics' -- not the "
-                           "code alone."),
+                      help="Two parts, both required: the CC- code and the department "
+                           "name printed immediately after it. Copy the run of text "
+                           "from the code up to the end of the department name. "
+                           "'CC-2040 Operations' is correct. Returning the code alone, "
+                           "'CC-2040', is the most common error and is wrong."),
                 Field("service_period_start", "date",
                       help="First date of this service's billing period."),
                 Field("service_period_end", "date",

@@ -27,7 +27,12 @@ JSON_TYPE = {
 DESCRIPTIONS = {
     "date": "Date exactly as printed on the document.",
     "money": "Numeric amount only, no currency symbol or thousands separators.",
-    "identifier": "Identifier exactly as printed, including any prefix.",
+    # "including any prefix" used to end this line and meant the INV- in INV-4471.
+    # A model reads it as "keep whatever precedes the number" and returns the
+    # label word too, which is the opposite of what any identifier field wants.
+    "identifier": "Identifier exactly as printed. Keep a prefix that is part of "
+                  "the identifier itself, such as the INV- in INV-4471, but never "
+                  "the label word printed in front of it.",
     "ssn": "Digits and separators exactly as printed.",
     "ein": "Digits and separators exactly as printed.",
     "phone": "Digits and separators exactly as printed.",
