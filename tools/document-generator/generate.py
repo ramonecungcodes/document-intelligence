@@ -691,13 +691,15 @@ def mb_html(layout, vendor, x):
 
     if layout == 0:      # summary table up top, detail blocks below
         summ = "".join(
-            f"<tr><td><b>{esc(s['service_type'])}</b><div class='muted'>{esc(s['reference_label'])} "
+            f"<tr><td><b>{esc(s['service_type'])}</b> <span class='muted'>[{esc(s['service_code'])}]</span>"
+            f"<div class='muted'>{esc(s['reference_label'])} "
             f"{esc(s['reference_number'])}{(' &middot; ' + esc(s['service_location'])) if s['service_location'] else ''}</div></td>"
             f"<td>{esc(s['account_number'])}</td><td>{_mb_period(s)}</td><td>{esc(s['cost_center'])}</td>"
             f"<td class='r' style='font-weight:700'>{money(s['total'])}</td></tr>" for s in x["sections"])
         detail = "".join(
             f"<div style='margin-top:16px;border-left:4px solid {accent};padding-left:12px'>"
-            f"<div style='font-weight:700;color:{color}'>{esc(s['service_type'])} &mdash; {esc(s['account_number'])}</div>"
+            f"<div style='font-weight:700;color:{color}'>{esc(s['service_code'])} &middot; "
+            f"{esc(s['service_type'])} &mdash; {esc(s['account_number'])}</div>"
             f"<div class='muted'>{esc(s['reference_label'])} {esc(s['reference_number'])} &middot; {_mb_period(s)}</div>"
             f"<table><thead><tr style='border-bottom:1px solid #999'><th style='text-align:left'>Description</th>"
             f"<th class='r'>Qty</th><th class='r'>Unit</th><th class='r'>Amount</th></tr></thead>"
@@ -721,7 +723,8 @@ def mb_html(layout, vendor, x):
         cards = "".join(
             f"<div style='border:1px solid #ccc;border-top:5px solid {color};margin-top:14px;padding:12px 14px'>"
             f"<div style='display:flex;justify-content:space-between;align-items:flex-start'>"
-            f"<div><div style='font-size:15px;font-weight:700;color:{color}'>{esc(s['service_type'])}</div>"
+            f"<div><div style='font-size:15px;font-weight:700;color:{color}'>"
+            f"{esc(s['service_type'])} <span style='font-weight:400'>({esc(s['service_code'])})</span></div>"
             f"<div class='muted'>{esc(s['reference_label'])} {esc(s['reference_number'])}"
             f"{(' &middot; ' + esc(s['service_location'])) if s['service_location'] else ''}</div></div>"
             f"<div style='text-align:right'><div class='lbl'>Account &mdash; pay separately</div>"
@@ -751,6 +754,7 @@ def mb_html(layout, vendor, x):
     legend = "".join(
         f"<div style='display:flex;justify-content:space-between;border-bottom:1px dotted #bbb;padding:3px 0'>"
         f"<span>{esc(s['service_code'])} &middot; {esc(s['service_type'])} &middot; {esc(s['account_number'])}"
+        f" &middot; {esc(s['reference_label'])} {esc(s['reference_number'])}"
         f"{(' &middot; ' + esc(s['service_location'])) if s['service_location'] else ''}</span>"
         f"<span class='muted'>{_mb_period(s)} &middot; {esc(s['cost_center'])}</span></div>"
         for s in x["sections"])

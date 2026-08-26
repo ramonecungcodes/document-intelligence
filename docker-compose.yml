@@ -47,10 +47,20 @@ services:
       DI_OPENAI_API_KEY: ${DI_OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # Namespaced per-plugin overrides, for a one-off run without editing di.toml.
+      # Every setting a plugin declares needs a line here: compose forwards only what
+      # it is told to, and a variable set in the shell but missing from this list is
+      # silently dropped -- which looks exactly like the override not working.
       DI_EXTRACTOR: ${DI_EXTRACTOR:-}
       DI_OPENAI_MODEL: ${DI_OPENAI_MODEL:-}
+      DI_OPENAI_BASE_URL: ${DI_OPENAI_BASE_URL:-}
+      DI_OPENAI_MAX_TOKENS: ${DI_OPENAI_MAX_TOKENS:-}
+      DI_OPENAI_TIMEOUT: ${DI_OPENAI_TIMEOUT:-}
+      DI_OPENAI_JSON_MODE: ${DI_OPENAI_JSON_MODE:-}
       DI_OPENAI_NO_THINK: ${DI_OPENAI_NO_THINK:-}
+      DI_OPENAI_BASIC_AUTH: ${DI_OPENAI_BASIC_AUTH:-}
       DI_ANTHROPIC_MODEL: ${DI_ANTHROPIC_MODEL:-}
+      DI_ANTHROPIC_EFFORT: ${DI_ANTHROPIC_EFFORT:-}
+      DI_ANTHROPIC_MAX_TOKENS: ${DI_ANTHROPIC_MAX_TOKENS:-}
     # Lets the container reach a model server running on the host. Docker Desktop
     # provides host.docker.internal already; this adds it on Linux too.
     extra_hosts:
