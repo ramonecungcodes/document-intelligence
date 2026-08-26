@@ -23,6 +23,9 @@ COPY di.toml ./
 COPY core/ ./core/
 COPY eval/ ./eval/
 COPY extract/ ./extract/
+# The scoring tests fixture off six committed sample documents. Without them 14
+# tests skip-by-crashing rather than failing loudly, which is worse than either.
+COPY tools/document-generator/samples/ ./tools/document-generator/samples/
 COPY tests/ ./tests/
 
 ENTRYPOINT ["python", "-m", "eval.cli"]
