@@ -188,6 +188,39 @@ class AnthropicBackend:
 
 
 # ------------------------------------------------------------------ openai-compatible
+# Phrases that identify a 400 as being about the response format rather than anything
+# else. This is a whitelist on purpose. The first version of this check asked the
+# opposite question -- is this 400 *not* one of the few things I know are unrelated --
+# and a model that failed to load ("insufficient system resources") sailed straight
+# through it, spending a wasted retry and then pinning the whole run to prompt mode for
+# a reason that had nothing to do with the schema. The set of 400s a server can raise
+# is open-ended; the set that means "I will not take this schema" is small and nameable.
+_SCHEMA_COMPLAINTS = (
+    "response_format",
+    "json_schema",
+    "schema",
+    "'type' must be",
+    "additionalproperties",
+)
+
+
+def _is_schema_rejection(error: Exception) -> bool:
+    """Did the server refuse the *schema*, as opposed to failing for any other reason?
+
+    A downgrade is only worth making when retrying unconstrained could plausibly work.
+    That is true when the server objected to the shape of the request and false for
+    every other 400 -- a model that will not load, a context that will not fit, a rate
+    limit -- where a second attempt spends another budget to fail identically. When in
+    doubt this returns False and the document fails with the real error, which is the
+    answer that leads to a fix.
+    """
+    status = getattr(error, "status_code", None) or getattr(error, "code", None)
+    if status not in (400, "400"):
+        return False
+    text = str(error).lower()
+    return any(phrase in text for phrase in _SCHEMA_COMPLAINTS)
+
+
 class OpenAIBackend:
     """Any server speaking OpenAI chat-completions.
 
@@ -335,18 +368,19 @@ class OpenAIBackend:
             return ["schema", "prompt"]
         return [current]
 
-    def _downgrade(self):
+    def _downgrade(self, why: str = "returned nothing under json_schema"):
         with self._lock:
             if self._downgraded:
                 return
             self._downgraded = True
             self._mode = "prompt"
-        print(f"  note: {self.model} returned nothing under json_schema; using "
-              f"schema-in-prompt for the rest of this run", flush=True)
+        print(f"  note: {self.model} {why}; using schema-in-prompt for the rest of "
+              f"this run", flush=True)
 
     def complete(self, system: str, user: str, schema: dict) -> Completion:
         total = Usage()
-        for attempt, mode in enumerate(self._modes()):
+        modes = self._modes()
+        for attempt, mode in enumerate(modes):
             attempt_started = time.time()
             try:
                 choice, usage = self._call(system, user, schema, mode)
@@ -354,6 +388,17 @@ class OpenAIBackend:
                 # Record the wall time even on failure: a request that timed out took
                 # exactly as long as the budget it blew.
                 total.add(Usage(calls=1, seconds=time.time() - attempt_started))
+                # An endpoint that rejects the schema outright is the same situation as
+                # one that accepts it and then answers nothing, and it earns the same
+                # fallback. Servers disagree about what they will accept -- a nullable
+                # field's ["string", "null"] is a common refusal -- and without this a
+                # single 400 makes a whole model unusable rather than merely
+                # unconstrained. Only a rejection downgrades: a timeout or a dropped
+                # connection says nothing about the schema, and retrying it in prompt
+                # mode would spend a second budget to fail the same way.
+                if _is_schema_rejection(error) and attempt + 1 < len(modes):
+                    self._downgrade(f"rejected the json_schema request ({error})")
+                    continue
                 return Completion(usage=total, mode=mode,
                                   error=f"{type(error).__name__}: {error}")
             total.add(usage)

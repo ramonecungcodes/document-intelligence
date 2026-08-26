@@ -90,3 +90,121 @@ class TestText:
     def test_missing_file_raises(self):
         with pytest.raises(FileNotFoundError):
             read_pdf(os.path.join(SAMPLES, "does-not-exist.pdf"))
+
+
+class TestSchemaRejectionFallback:
+    """A 400 on the json_schema request is a downgrade signal, not a dead document.
+
+    Endpoints disagree about what schema they will accept. LM Studio refuses a
+    nullable field's `["string", "null"]` outright for some models, which made an
+    entire model unusable: `auto` mode listed prompt as its fallback but the exception
+    path returned before ever trying it.
+    """
+
+    def error(self, status, message="response_format schema rejected"):
+        class Rejected(Exception):
+            status_code = status
+        return Rejected(message)
+
+    def test_the_real_rejection_this_was_built_for(self):
+        """LM Studio's refusal of a nullable field's ["string", "null"]."""
+        from extract.backends import _is_schema_rejection
+        assert _is_schema_rejection(self.error(
+            400, "Error in iterating prediction stream: ValueError: 'type' must be a string"))
+
+    def test_a_response_format_complaint_is_a_rejection(self):
+        from extract.backends import _is_schema_rejection
+        assert _is_schema_rejection(
+            self.error(400, "response_format json_schema is not supported"))
+
+    def test_a_context_length_400_is_not(self):
+        """The request was too big, not badly shaped; prompt mode would only be bigger."""
+        from extract.backends import _is_schema_rejection
+        assert not _is_schema_rejection(
+            self.error(400, "This model's maximum context length is 8192 tokens"))
+
+    def test_a_rate_limit_400_is_not(self):
+        from extract.backends import _is_schema_rejection
+        assert not _is_schema_rejection(self.error(400, "Rate limit exceeded"))
+
+    def test_a_model_that_will_not_load_is_not(self):
+        """Observed in a real run: this downgraded, wasted a retry, and pinned the
+        rest of the run to prompt mode for a reason unrelated to the schema."""
+        from extract.backends import _is_schema_rejection
+        assert not _is_schema_rejection(self.error(
+            400, 'Failed to load model "google/gemma-4-e4b". Error: Model loading was '
+                 "stopped due to insufficient system resources."))
+
+    def test_an_unrecognised_400_does_not_downgrade(self):
+        """Unknown means fail with the real error, not guess and retry."""
+        from extract.backends import _is_schema_rejection
+        assert not _is_schema_rejection(self.error(400, "something else went wrong"))
+
+    def test_other_statuses_are_not(self):
+        from extract.backends import _is_schema_rejection
+        for status in (401, 404, 429, 500, 503, None):
+            assert not _is_schema_rejection(self.error(status)), status
+
+    def test_a_timeout_is_not(self):
+        from extract.backends import _is_schema_rejection
+        assert not _is_schema_rejection(TimeoutError("timed out"))
+
+    def build(self, effects, json_mode="auto"):
+        from extract.backends import OpenAIBackend
+        backend = OpenAIBackend.__new__(OpenAIBackend)
+        backend.model = "test"
+        backend.json_mode = json_mode
+        backend._mode = "schema" if json_mode in ("auto", "schema") else "prompt"
+        backend._downgraded = False
+        import threading
+        backend._lock = threading.Lock()
+        backend.tried = []
+
+        def _call(system, user, schema, mode):
+            backend.tried.append(mode)
+            effect = effects.pop(0)
+            if isinstance(effect, Exception):
+                raise effect
+            return effect
+
+        backend._call = _call
+        return backend
+
+    def choice(self, text):
+        from extract.backends import Usage
+
+        class Message:
+            content = text
+            reasoning_content = ""
+
+        class Choice:
+            message = Message()
+            finish_reason = "stop"
+
+        return Choice(), Usage(calls=1)
+
+    def test_auto_retries_in_prompt_mode_after_a_rejection(self):
+        backend = self.build([self.error(400), self.choice('{"invoice_number": "A1"}')])
+        result = backend.complete("sys", "user", {})
+        assert backend.tried == ["schema", "prompt"]
+        assert not result.error
+        assert result.mode == "prompt"
+
+    def test_the_downgrade_sticks_for_the_rest_of_the_run(self):
+        backend = self.build([self.error(400), self.choice('{"a": 1}')])
+        backend.complete("sys", "user", {})
+        assert backend._modes() == ["prompt"]
+
+    def test_a_non_rejection_error_still_fails_the_document(self):
+        """A timeout must not burn a second request to fail the same way."""
+        backend = self.build([TimeoutError("timed out")])
+        result = backend.complete("sys", "user", {})
+        assert backend.tried == ["schema"]
+        assert "TimeoutError" in result.error
+
+    def test_schema_mode_does_not_fall_back(self):
+        """An explicit `schema` is a demand, not a preference."""
+        backend = self.build([self.error(400)], json_mode="schema")
+        result = backend.complete("sys", "user", {})
+        assert backend.tried == ["schema"]
+        assert result.error
