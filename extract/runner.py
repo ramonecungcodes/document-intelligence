@@ -79,6 +79,11 @@ def extract_document(backend, doctype: DocType, pdf_path: str, relative_path: st
     if completion.truncated:
         base["_note"] = "truncated at max tokens"
     base.update(parsed)
+    # The variant key is ours, not the model's. It is excluded from the schema, but a
+    # backend in prompt mode can return whatever it likes, and update() would let that
+    # overwrite the value the corpus already told us.
+    if variant and doctype.variant_key:
+        base[doctype.variant_key] = variant
 
     # Deterministic cleanup, declared per document type. What each rule changed is
     # recorded on the prediction rather than absorbed, so a run can never quietly

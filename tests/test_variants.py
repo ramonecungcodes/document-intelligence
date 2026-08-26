@@ -45,7 +45,8 @@ class TestVariantDeclaration:
         by_type = corpus_fields_by_type()
         for form_type, actual in by_type.items():
             declared = {f.name for f in FORM.fields_for(form_type)}
-            # form_type itself is shared and always present
+            # form_type is shared, always present, and never extracted -- see
+            # TestVariantKeyIsNotExtracted below.
             spurious = declared - actual - {"form_type"}
             assert not spurious, f"{form_type} is asked for absent fields: {sorted(spurious)}"
 
@@ -105,3 +106,57 @@ class TestSectionIdentifiers:
         assert "reference_label" not in section
         # The number it labels is still asked for, and still says what it is.
         assert "meter" in section["reference_number"]["description"].lower()
+
+
+class TestVariantKeyIsNotExtracted:
+    """The key that selected the schema is not a field the schema asks for.
+
+    Asked for a `form_type`, a model returns what the form calls itself on the page --
+    "HR-ONB-1002", "New Hire Onboarding Form" -- because "onboarding" is a name in our
+    taxonomy and appears nowhere on the document. Every one of the 160 forms in the
+    first baseline was wrong on this single field, and none of them was the model's
+    fault. It is the same defect as asking for `reference_label`.
+    """
+
+    def test_it_is_absent_from_every_variant_schema(self):
+        for variant in FORM.variants:
+            assert "form_type" not in json_schema(FORM, variant)["properties"], variant
+
+    def test_it_is_absent_from_the_union_schema(self):
+        """Deciding it from the document is classification, not extraction."""
+        assert "form_type" not in json_schema(FORM)["properties"]
+
+    def test_the_rest_of_the_variant_survives(self):
+        w9 = json_schema(FORM, "w9")["properties"]
+        assert "tax_classification" in w9 and "ssn" in w9
+
+    def test_types_without_a_variant_key_lose_nothing(self):
+        for name, doctype in REGISTRY.items():
+            if doctype.variant_key:
+                continue
+            declared = {f.name for f in doctype.fields}
+            assert set(json_schema(doctype)["properties"]) >= declared, name
+
+    def test_the_schema_is_still_valid_for_structured_output(self):
+        for variant in FORM.variants:
+            schema = json_schema(FORM, variant)
+            assert set(schema["required"]) == set(schema["properties"])
+            assert schema["additionalProperties"] is False
+
+    def test_the_runner_keeps_the_corpus_value(self):
+        """A prompt-mode backend can return anything; update() must not let it win."""
+        from extract.runner import extract_document
+
+        class Backend:
+            def complete(self, system, user, schema):
+                from extract.backends import Completion, Usage
+                return Completion(text='{"form_type": "HR-ONB-1002", "ssn": "1"}',
+                                  usage=Usage(calls=1), mode="prompt")
+
+        import os
+        sample = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "tools", "document-generator", "samples", "form-w9.pdf")
+        if not os.path.exists(sample):
+            pytest.skip("no sample document available")
+        result = extract_document(Backend(), FORM, sample, "forms/x.pdf", variant="w9")
+        assert result.record["form_type"] == "w9"

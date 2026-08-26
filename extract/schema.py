@@ -86,8 +86,20 @@ def _array(group: Group) -> dict:
 
 
 def json_schema(doctype: DocType, variant: str = "") -> dict:
-    """The output schema for one document type, narrowed to a variant if it has them."""
-    return _object(doctype.fields_for(variant), doctype.groups)
+    """The output schema for one document type, narrowed to a variant if it has them.
+
+    The variant key is never asked for. It is what selected this schema in the first
+    place, so requesting it back is circular -- and the model cannot answer it anyway:
+    "onboarding" is a name in our taxonomy, not a string printed on the page. Asked for
+    a form_type, a model reasonably returns what the form actually calls itself,
+    "HR-ONB-1002" or "New Hire Onboarding Form", and is marked wrong for being right.
+    Measured on the first baseline: 160 of 160 forms wrong on that one field.
+
+    The runner supplies it from the corpus instead. Deciding it from the document is
+    classification, which is the classifier slot's job, not something to smuggle into
+    the extractor's schema.
+    """
+    return _object(doctype.graded_fields(variant), doctype.groups)
 
 
 def instructions(doctype: DocType, variant: str = "") -> str:

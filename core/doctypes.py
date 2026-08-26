@@ -65,6 +65,18 @@ class DocType:
         """Which variant a document belongs to, read from its own record."""
         return str(record.get(self.variant_key, "")) if self.variant_key else ""
 
+    def graded_fields(self, variant: str = "") -> tuple:
+        """The fields the extractor asks for and the scorer grades -- the same set.
+
+        `fields_for` minus the variant key. That key is not extracted (it selected the
+        schema, so asking for it is circular) and must not be graded either: the runner
+        writes it from the corpus, so grading it would score a value we supplied
+        ourselves. It was previously in both, wrong on all 160 forms; scoring it now
+        would be equally wrong in the flattering direction.
+        """
+        return tuple(spec for spec in self.fields_for(variant)
+                     if spec.name != self.variant_key)
+
     def fields_for(self, variant: str = "") -> tuple:
         """The fields to ask for: shared fields plus the variant's own.
 

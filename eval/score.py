@@ -143,7 +143,7 @@ def score_document(predicted: dict, truth: dict, spec: DocType, slice_score: Sli
     slice_score.scored += 1
     # Variant types keep most of their fields on the variant, not the shared tuple --
     # grading spec.fields alone would silently score a W-9 on one field.
-    score_fields(predicted, truth, spec.fields_for(spec.variant_of(truth)),
+    score_fields(predicted, truth, spec.graded_fields(spec.variant_of(truth)),
                  slice_score.fields)
     for group in spec.groups:
         score_group(predicted, truth, group, slice_score.groups)
