@@ -34,6 +34,41 @@ class Result:
     rules: object = None        # RuleReport: what deterministic cleanup changed
 
 
+def collapse_optional(record: dict, doctype, variant: str = "") -> None:
+    """Flatten {"status": ..., "value": ...} back to a plain value, in place.
+
+    Fields declared `optional` are asked as a decision rather than a slot, so the model
+    answers with a shape. Nothing downstream should have to know that: the rules, the
+    scorer and the stored record all speak plain values, and making them handle two
+    shapes would spread one extraction detail across the whole system.
+
+    'present' keeps the value, 'absent' and 'unclear' become None. Treating 'unclear'
+    as absent is deliberate for now -- this field is worth optimising for precision,
+    since an invented address flows downstream unchallenged while a blank one gets
+    looked at. When confidence routing exists, 'unclear' is what feeds it, and that is
+    the reason it is a distinct answer rather than folded into 'absent' at the model.
+    """
+    optional = {spec.name for spec in doctype.graded_fields(variant)
+                if getattr(spec, "optional", False)}
+    for group in doctype.groups:
+        optional |= {spec.name for spec in group.fields
+                     if getattr(spec, "optional", False)}
+
+    def walk(container):
+        if not isinstance(container, dict):
+            return
+        for name in list(container):
+            answer = container.get(name)
+            if name in optional and isinstance(answer, dict) and "status" in answer:
+                container[name] = (answer.get("value")
+                                   if answer.get("status") == "present" else None)
+            elif isinstance(answer, list):
+                for row in answer:
+                    walk(row)
+
+    walk(record)
+
+
 def extract_document(backend, doctype: DocType, pdf_path: str, relative_path: str,
                      variant: str = "", rule_settings=None) -> Result:
     """Read one PDF and return a prediction record shaped like a corpus label.
@@ -92,6 +127,7 @@ def extract_document(backend, doctype: DocType, pdf_path: str, relative_path: st
 
     if completion.truncated:
         base["_note"] = "truncated at max tokens"
+    collapse_optional(parsed, doctype, variant)
     base.update(parsed)
     # The variant key is ours, not the model's. It is excluded from the schema, but a
     # backend in prompt mode can return whatever it likes, and update() would let that

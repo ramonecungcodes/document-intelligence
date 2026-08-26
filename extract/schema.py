@@ -58,8 +58,54 @@ def _property(spec: Field) -> dict:
     return prop
 
 
+ABSENCE_GUIDANCE = (
+    "Decide first whether this document carries this field at all. Set status to "
+    "'absent' and value to null when it does not -- that is a correct and expected "
+    "answer, not a failure to find something. Set 'present' with the value only when "
+    "the document actually shows it. Use 'unclear' when text might be it but you "
+    "cannot tell. Never fill value by borrowing from another field or by inferring "
+    "what a plausible answer would be."
+)
+
+
+def _optional_property(spec: Field, inner: dict) -> dict:
+    """Ask whether the field exists before asking what it holds.
+
+    A flat nullable field asks one question -- "what is the value?" -- and a required
+    slot with no answer is pressure to invent one. Measured on the corpus: 46 of 46
+    absent service locations were filled anyway, 37 of them copied verbatim from a
+    neighbouring field, and a model four times larger produced exactly the same count.
+    co_applicant_name did worse, inventing a person on all 25 loan applications that
+    had none, without copying anything -- fabricating outright.
+
+    Nullable was never the problem: the type already permitted null and the description
+    already said null was usually right, three rewrites running, and nothing moved. So
+    absence stops being a value the model may return and becomes a decision it has to
+    make. The runner collapses the answer back to a plain value, leaving the record
+    contract and every rule and scorer downstream untouched.
+    """
+    return {
+        "type": "object",
+        "description": (inner.get("description", "") + " " + ABSENCE_GUIDANCE).strip(),
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["present", "absent", "unclear"],
+                "description": "Whether this document carries this field at all.",
+            },
+            "value": {k: v for k, v in inner.items() if k != "description"},
+        },
+        "required": ["status", "value"],
+        "additionalProperties": False,
+    }
+
+
 def _object(fields, groups) -> dict:
-    properties = {spec.name: _property(spec) for spec in fields}
+    properties = {}
+    for spec in fields:
+        prop = _property(spec)
+        properties[spec.name] = (_optional_property(spec, prop)
+                                 if getattr(spec, "optional", False) else prop)
     for group in groups:
         properties[group.name] = _array(group)
     return {

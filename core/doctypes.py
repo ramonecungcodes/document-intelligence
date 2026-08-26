@@ -27,6 +27,9 @@ class Field:
     help: str = ""              # goes into the extraction schema as the description;
                                 # required wherever a type shares a `kind` with a
                                 # sibling field, or the model cannot tell them apart
+    optional: bool = False      # the document may legitimately not carry this field
+                                # at all, and saying so is part of the answer. See
+                                # extract.schema for what it changes about the ask.
 
 
 @dataclass(frozen=True)
@@ -187,15 +190,18 @@ MULTI_BILL_INVOICE = DocType(
                       help="The reference identifier itself, printed after its label, "
                            "e.g. M3947745 for a meter or MOB/76795/DS1 for a circuit. "
                            "Not the account number."),
-                Field("service_location", "text",
+                # Absence is handled by `optional`, not by this text. The two must not
+                # both explain it: the previous version ended with "return null", which
+                # contradicts a schema that asks for status 'absent' instead, and a
+                # description arguing with its own schema is what made reference_number
+                # wrong for three rounds. This says what the value is; the schema says
+                # what to do when there isn't one.
+                Field("service_location", "text", optional=True,
                       help="Street address of the site this service is delivered to. "
                            "Begin at the street number: a label such as SITE or "
                            "LOCATION printed in front of it is not part of the "
-                           "address. Most bills show no per-service site at all -- if "
-                           "no street address appears in this service's block, return "
-                           "null. A cost centre, a service type or the billing address "
-                           "is not a service location; null is the right answer far "
-                           "more often than not."),
+                           "address. A cost centre, a service type, a meter number or "
+                           "the billing address is not a service location."),
                 Field("cost_center", "text",
                       help="Two parts, both required: the CC- code and the department "
                            "name printed immediately after it. Copy the run of text "
@@ -275,7 +281,7 @@ _CLAIM = (
 
 _W9 = (
     Field("name", "name", help="Name as shown on the income tax return."),
-    Field("business_name", "name",
+    Field("business_name", "name", optional=True,
           help="Trade or business name, if different from the name above."),
     Field("tax_classification", "enum"), Field("address", "text"),
     Field("city_state_zip", "text"),
@@ -301,7 +307,7 @@ _LOAN = (
     Field("loan_amount", "money"), Field("loan_term_months", "number", tolerance=0),
     Field("loan_purpose", "text"), Field("down_payment", "money"),
     Field("monthly_debt", "money"), Field("credit_score", "number", tolerance=0),
-    Field("co_applicant_name", "name"),
+    Field("co_applicant_name", "name", optional=True),
 )
 
 FORM = DocType(

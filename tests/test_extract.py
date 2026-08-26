@@ -252,3 +252,109 @@ class TestTruncationIsNotMalformedOutput:
         result = self.result_for('{"name": "Ada Lovelace"}', truncated=False)
         assert not result.error
         assert result.record["name"] == "Ada Lovelace"
+
+
+class TestOptionalFields:
+    """Fields the document may not carry are asked as a decision, not a slot.
+
+    A flat nullable field asks "what is the value?", and a required slot with no answer
+    is pressure to invent one: 46 of 46 absent service locations were filled anyway,
+    37 copied verbatim from a neighbour, and a model four times larger produced exactly
+    the same count. Nullability was never the missing piece -- the type already allowed
+    null and the description said so for three rewrites running.
+    """
+
+    def prop(self, variant="loan", name="co_applicant_name"):
+        from core.doctypes import FORM
+        return json_schema(FORM, variant)["properties"][name]
+
+    def test_an_optional_field_asks_for_a_status(self):
+        prop = self.prop()
+        assert prop["type"] == "object"
+        assert set(prop["properties"]) == {"status", "value"}
+        assert prop["properties"]["status"]["enum"] == ["present", "absent", "unclear"]
+
+    def test_the_value_keeps_the_type_it_would_have_had(self):
+        from core.doctypes import REGISTRY
+        sections = json_schema(REGISTRY["multi_bill_invoice"])["properties"]["sections"]
+        prop = sections["items"]["properties"]["service_location"]
+        assert prop["properties"]["value"]["type"] == ["string", "null"]
+
+    def test_absence_guidance_reaches_the_model(self):
+        assert "absent" in self.prop()["description"].lower()
+
+    def test_a_required_field_is_left_alone(self):
+        """Only fields that can legitimately be missing change shape."""
+        assert json_schema(__import__("core.doctypes", fromlist=["FORM"]).FORM,
+                           "loan")["properties"]["loan_amount"]["type"] == ["number", "null"]
+
+    def test_optional_fields_are_still_required_keys(self):
+        """Structured output needs every property listed; the object is not optional."""
+        from core.doctypes import FORM
+        schema = json_schema(FORM, "loan")
+        assert "co_applicant_name" in schema["required"]
+        assert set(self.prop()["required"]) == {"status", "value"}
+
+
+class TestCollapseOptional:
+    """The decision is flattened before anything downstream sees it.
+
+    Rules, scorer and stored records all speak plain values. Teaching them a second
+    shape would spread one extraction detail across the whole system.
+    """
+
+    def collapse(self, record, doctype=None, variant=""):
+        from core.doctypes import REGISTRY
+        from extract.runner import collapse_optional
+        collapse_optional(record, doctype or REGISTRY["multi_bill_invoice"], variant)
+        return record
+
+    def test_present_keeps_the_value(self):
+        rec = self.collapse({"sections": [
+            {"service_location": {"status": "present", "value": "77 Oak Street"}}]})
+        assert rec["sections"][0]["service_location"] == "77 Oak Street"
+
+    def test_absent_becomes_none(self):
+        rec = self.collapse({"sections": [
+            {"service_location": {"status": "absent", "value": None}}]})
+        assert rec["sections"][0]["service_location"] is None
+
+    def test_unclear_becomes_none_and_discards_the_guess(self):
+        """Optimised for precision: an invented address outlives a blank one."""
+        rec = self.collapse({"sections": [
+            {"service_location": {"status": "unclear", "value": "Meter M3947745"}}]})
+        assert rec["sections"][0]["service_location"] is None
+
+    def test_a_present_status_with_no_value_is_still_none(self):
+        rec = self.collapse({"sections": [
+            {"service_location": {"status": "present", "value": None}}]})
+        assert rec["sections"][0]["service_location"] is None
+
+    def test_top_level_optional_fields_collapse_too(self):
+        from core.doctypes import FORM
+        rec = self.collapse(
+            {"co_applicant_name": {"status": "absent", "value": None},
+             "loan_amount": 250000},
+            doctype=FORM, variant="loan")
+        assert rec["co_applicant_name"] is None
+        assert rec["loan_amount"] == 250000      # untouched
+
+    def test_non_optional_fields_are_never_touched(self):
+        rec = self.collapse({"sections": [
+            {"cost_center": "CC-2040 Operations", "service_code": "UTL-1"}]})
+        assert rec["sections"][0]["cost_center"] == "CC-2040 Operations"
+
+    def test_a_flat_answer_survives_a_backend_that_ignored_the_shape(self):
+        """Prompt mode cannot be made to comply; a plain string must still work."""
+        rec = self.collapse({"sections": [{"service_location": "77 Oak Street"}]})
+        assert rec["sections"][0]["service_location"] == "77 Oak Street"
+
+    def test_a_dict_without_a_status_is_left_as_is(self):
+        rec = self.collapse({"sections": [{"service_location": {"value": "x"}}]})
+        assert rec["sections"][0]["service_location"] == {"value": "x"}
+
+    def test_it_survives_the_absences_the_record_contract_warns_about(self):
+        assert self.collapse({}) == {}
+        assert self.collapse({"sections": None}) == {"sections": None}
+        assert self.collapse({"sections": ["not a dict"]}) == {"sections": ["not a dict"]}
+        assert self.collapse({"sections": [{}]}) == {"sections": [{}]}
