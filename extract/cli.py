@@ -42,6 +42,48 @@ CORPUS_ROOT = os.environ.get("DI_DATASET_ROOT", "/data")
 REPORTS_DIR = os.environ.get("DI_REPORTS_DIR", "/reports")
 
 
+def sample(records, doctype, limit):
+    """Take `limit` documents spread across the type's variants, not off the top.
+
+    `records[:limit]` looked like a sample and was not. The first twelve forms in the
+    corpus are all onboarding forms, so every quick check run during development graded
+    onboarding and nothing else -- blind to claims, W-9s, W-4s and loan applications,
+    three fifths of the type. A field that invented a co-applicant name on all 25 loan
+    applications lacking one went unseen through a full day of regression runs, because
+    a loan application was never once in the sample.
+
+    Round-robin over the variants: first of each, then second of each. Any prefix is
+    balanced, so `--limit 5` is as representative as `--limit 40`. Deterministic and
+    order-preserving rather than random, because runs are compared against each other
+    and a sample that moved between runs would make every comparison unreadable.
+
+    Types without variants are stratified by layout instead, which is the other
+    dimension the corpus varies deliberately.
+    """
+    if not limit or limit >= len(records):
+        return records
+    buckets = {}
+    for record in records:
+        key = (doctype.variant_of(record) if doctype.variant_key
+               else str(record.get("layout", "")))
+        buckets.setdefault(key, []).append(record)
+
+    taken, depth = [], 0
+    while len(taken) < limit:
+        progressed = False
+        for bucket in buckets.values():
+            if depth >= len(bucket):
+                continue
+            taken.append(bucket[depth])
+            progressed = True
+            if len(taken) == limit:
+                return taken
+        if not progressed:      # every bucket exhausted before reaching the limit
+            break
+        depth += 1
+    return taken
+
+
 def collect(corpus_root, only, limit):
     """Every corpus document, paired with the type declaration it should be read as."""
     jobs, unknown = [], set()
@@ -50,7 +92,7 @@ def collect(corpus_root, only, limit):
         if doctype is None:
             unknown.add(stem)
             continue
-        for record in (records[:limit] if limit else records):
+        for record in sample(records, doctype, limit):
             jobs.append((doctype, record["file"], doctype.variant_of(record)))
     return jobs, unknown
 
@@ -306,7 +348,8 @@ def main(argv=None):
     go = sub.add_parser("run", help="extract every document in the corpus")
     go.add_argument("--corpus", default=CORPUS_ROOT)
     go.add_argument("--only", default="", help="comma-separated label stems")
-    go.add_argument("--limit", type=int, default=0, help="first N documents per type")
+    go.add_argument("--limit", type=int, default=0,
+                    help="N documents per type, spread across its variants")
     go.add_argument("--out", default=None, metavar="NAME",
                     help=f"file name inside {REPORTS_DIR} "
                          f"(default: predictions.jsonl)")

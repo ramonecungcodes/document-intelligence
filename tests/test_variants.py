@@ -160,3 +160,72 @@ class TestVariantKeyIsNotExtracted:
             pytest.skip("no sample document available")
         result = extract_document(Backend(), FORM, sample, "forms/x.pdf", variant="w9")
         assert result.record["form_type"] == "w9"
+
+
+class TestStratifiedSampling:
+    """`--limit` must sample across variants, not take the top of the file.
+
+    The first twelve forms in the corpus are all onboarding forms. Every quick check
+    run during development therefore graded onboarding only, blind to three fifths of
+    the type -- which is why a field inventing a co-applicant name on 25 loan
+    applications survived a full day of regression runs unseen.
+    """
+
+    def records(self, kinds):
+        return [{"file": f"{k}_{i}.pdf", "form_type": k, "layout": i % 3}
+                for k, n in kinds.items() for i in range(n)]
+
+    def test_a_small_limit_still_covers_every_variant(self):
+        from extract.cli import sample
+        corpus = self.records({"onboarding": 40, "claim": 40, "w9": 20,
+                               "w4": 20, "loan": 40})
+        taken = sample(corpus, FORM, 5)
+        assert {r["form_type"] for r in taken} == {"onboarding", "claim", "w9", "w4", "loan"}
+
+    def test_the_old_behaviour_would_have_failed_this(self):
+        """Twelve off the top is twelve onboarding forms."""
+        corpus = self.records({"onboarding": 40, "claim": 40, "loan": 40})
+        assert {r["form_type"] for r in corpus[:12]} == {"onboarding"}
+
+    def test_a_larger_limit_stays_balanced(self):
+        from extract.cli import sample
+        import collections
+        corpus = self.records({"onboarding": 40, "claim": 40, "w9": 20,
+                               "w4": 20, "loan": 40})
+        counts = collections.Counter(r["form_type"] for r in sample(corpus, FORM, 12))
+        assert len(counts) == 5
+        assert max(counts.values()) - min(counts.values()) <= 1
+
+    def test_every_prefix_is_representative(self):
+        """Any prefix is balanced, so --limit 5 is as fair as --limit 40."""
+        from extract.cli import sample
+        corpus = self.records({"onboarding": 40, "claim": 40, "loan": 40})
+        for n in (3, 6, 9):
+            assert len({r["form_type"] for r in sample(corpus, FORM, n)}) == 3
+
+    def test_it_is_deterministic(self):
+        """Runs are compared to each other; a sample that moved would break that."""
+        from extract.cli import sample
+        corpus = self.records({"onboarding": 40, "claim": 40, "loan": 40})
+        assert [r["file"] for r in sample(corpus, FORM, 7)] == \
+               [r["file"] for r in sample(corpus, FORM, 7)]
+
+    def test_a_limit_beyond_the_corpus_returns_everything(self):
+        from extract.cli import sample
+        corpus = self.records({"onboarding": 4, "loan": 2})
+        assert len(sample(corpus, FORM, 99)) == 6
+        assert len(sample(corpus, FORM, 0)) == 6
+
+    def test_uneven_variants_do_not_lose_documents(self):
+        """One tiny bucket must not stop the others from filling the quota."""
+        from extract.cli import sample
+        corpus = self.records({"onboarding": 40, "w4": 1})
+        assert len(sample(corpus, FORM, 10)) == 10
+
+    def test_types_without_variants_stratify_by_layout(self):
+        from extract.cli import sample
+        from core.doctypes import REGISTRY
+        invoice = REGISTRY["invoice"]
+        assert not invoice.variant_key
+        corpus = [{"file": f"i{i}.pdf", "layout": i % 3} for i in range(30)]
+        assert len({r["layout"] for r in sample(corpus, invoice, 3)}) == 3
