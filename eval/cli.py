@@ -32,6 +32,73 @@ def _fmt(value, width=7):
     return f"{value:>{width}.3f}" if isinstance(value, float) else f"{'--':>{width}}"
 
 
+def _field_note(f) -> str:
+    """What is worth saying about a field beyond its accuracy.
+
+    Invented values are never elided. This used to be an elif chain in the top-level
+    table that could only ever say "missing", and no note at all in the group table --
+    so a field inventing a co-applicant name on all 25 loan applications that had none
+    rendered as a bare 0.375 with an empty column, indistinguishable from a field that
+    simply missed things, and the opposite diagnosis. The counter was there the whole
+    time; only the rendering hid it.
+
+    Shared by both tables. Having two copies of this logic is what let them drift.
+    """
+    notes = []
+    if f["recovered_by_normalisation"]:
+        kinds = ", ".join(f["notes"]) or "normalised"
+        notes.append(f"+{f['recovered_by_normalisation']} by {kinds}")
+    if f["spurious"]:
+        notes.append(f"{f['spurious']} invented")
+    if f["missing"]:
+        notes.append(f"{f['missing']} missing")
+    return ", ".join(notes)
+
+
+def _walk_fields(container, prefix=""):
+    """Every field in a slice, including those nested inside repeating groups."""
+    for f in container.get("fields", []):
+        yield prefix + f["field"], f
+    for group in container.get("groups", []):
+        yield from _walk_fields(group, prefix + group["group"] + ".")
+
+
+def _render_abstention(out, data) -> None:
+    """Fields the document is allowed to omit, scored on whether we noticed.
+
+    Kept apart from the accuracy table because it answers a different question. An
+    accuracy figure charges the same one point for a missed value and an invented one,
+    which makes the worse error the invisible one: a blank field is honest and gets
+    looked at, while a confident wrong one flows downstream unchallenged. Only fields
+    that are genuinely absent somewhere in the corpus appear here -- for the rest there
+    is no abstention decision to get wrong.
+    """
+    rows = []
+    for slice_row in data.get("slices", []):
+        if slice_row.get("dimension") != "doc_type":
+            continue
+        for name, f in _walk_fields(slice_row):
+            if f.get("n_absent"):
+                rows.append((slice_row["slice"], name, f))
+    if not rows:
+        return
+    out.append("")
+    out.append("ABSTENTION  ·  fields the document may legitimately omit")
+    out.append(f"  {'field':<34}{'absent':>7}{'present':>8}{'presence':>10}"
+               f"{'precision':>11}{'invented':>10}{'copied':>8}")
+    for slice_name, name, f in sorted(rows, key=lambda r: (r[2].get("false_positive_rate") or 0),
+                                      reverse=True):
+        out.append(
+            f"  {name[:33]:<34}{f['n_absent']:>7}{f['n_present']:>8}"
+            f"{_fmt(f.get('presence_accuracy'), 10)}"
+            f"{_fmt(f.get('precision_populated'), 11)}"
+            f"{_fmt(f.get('false_positive_rate'), 10)}"
+            f"{_fmt(f.get('contamination_rate'), 8)}"
+        )
+    out.append("  invented = a value where the document had none; copied = that value")
+    out.append("  taken verbatim from a neighbouring field.")
+
+
 def render(report: ScoreReport) -> str:
     data = report.to_dict()
     out = []
@@ -77,18 +144,15 @@ def render(report: ScoreReport) -> str:
         out.append(f"{row['slice'].upper()}  ·  {row['documents']} docs")
         out.append(f"  {'field':<26}{'n':>6}{'exact':>8}{'accuracy':>10}  note")
         for f in sorted(row["fields"], key=lambda x: x["field"]):
-            note = ""
-            if f["recovered_by_normalisation"]:
-                kinds = ", ".join(f["notes"]) or "normalised"
-                note = f"+{f['recovered_by_normalisation']} by {kinds}"
-            elif f["missing"]:
-                note = f"{f['missing']} missing"
+            note = _field_note(f)
             out.append(
                 f"  {f['field']:<26}{f['n']:>6}{_fmt(f['exact'], 8)}"
                 f"{_fmt(f['accuracy'], 10)}  {note}"
             )
         for group in row["groups"]:
             _render_group(out, group, indent=2)
+
+    _render_abstention(out, data)
 
     detection = data.get("detection")
     if detection:
@@ -122,7 +186,8 @@ def _render_group(out, group, indent=2):
     )
     for f in sorted(group["fields"], key=lambda x: x["field"]):
         out.append(
-            f"{pad}  {f['field']:<24}{f['n']:>6}{_fmt(f['exact'], 8)}{_fmt(f['accuracy'], 10)}"
+            f"{pad}  {f['field']:<24}{f['n']:>6}{_fmt(f['exact'], 8)}"
+            f"{_fmt(f['accuracy'], 10)}  {_field_note(f)}".rstrip()
         )
     for nested in group["groups"]:
         _render_group(out, nested, indent + 2)
