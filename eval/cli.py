@@ -41,6 +41,8 @@ def render(report: ScoreReport) -> str:
     out.append(f"{'OVERALL':<24}{'':>10}")
     out.append(f"  documents          {overall['documents']:>8}")
     out.append(f"  scored             {overall['scored']:>8}")
+    if overall.get("failed"):
+        out.append(f"  extraction failed  {overall['failed']:>8}   (not graded)")
     out.append(f"  fields graded      {overall['fields_graded']:>8}")
     out.append(f"  field accuracy     {_fmt(overall['field_accuracy'], 8)}")
     out.append(f"  ... excluding blank{_fmt(overall['field_accuracy_nonblank'], 8)}"
@@ -57,10 +59,12 @@ def render(report: ScoreReport) -> str:
             continue
         out.append("")
         out.append(heading)
-        out.append(f"  {'slice':<24}{'docs':>6}{'accuracy':>10}{'non-blank':>11}{'exact':>9}")
+        out.append(f"  {'slice':<24}{'docs':>6}{'ok':>5}{'fail':>6}"
+                   f"{'accuracy':>10}{'non-blank':>11}{'exact':>9}")
         for row in rows:
             out.append(
                 f"  {row['slice']:<24}{row['documents']:>6}"
+                f"{row['scored']:>5}{row.get('failed', 0):>6}"
                 f"{_fmt(row['field_accuracy'], 10)}"
                 f"{_fmt(row['field_accuracy_nonblank'], 11)}"
                 f"{_fmt(row['field_exact'], 9)}"

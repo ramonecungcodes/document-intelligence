@@ -32,10 +32,18 @@ class Result:
     skipped: str = ""
 
 
-def extract_document(backend, doctype: DocType, pdf_path: str, relative_path: str) -> Result:
-    """Read one PDF and return a prediction record shaped like a corpus label."""
+def extract_document(backend, doctype: DocType, pdf_path: str, relative_path: str,
+                     variant: str = "") -> Result:
+    """Read one PDF and return a prediction record shaped like a corpus label.
+
+    `variant` narrows the schema for types that have them -- a W-9 is asked for the ten
+    fields a W-9 has, not the sixty-four spanning every kind of form. Like the document
+    type itself it is given rather than predicted; classification is a later phase.
+    """
     page_text = read_pdf(pdf_path)
     base = {"file": relative_path, "doc_type": doctype.name}
+    if variant and doctype.variant_key:
+        base[doctype.variant_key] = variant
 
     if page_text.empty:
         # No text layer: the honest answer is that this extractor cannot read it.
@@ -43,11 +51,12 @@ def extract_document(backend, doctype: DocType, pdf_path: str, relative_path: st
         return Result(record=base, skipped="no text layer")
 
     completion = backend.complete(
-        system=schema_mod.instructions(doctype),
+        system=schema_mod.instructions(doctype, variant),
         user=f"Document text:\n\n{page_text.text}",
-        schema=schema_mod.json_schema(doctype),
+        schema=schema_mod.json_schema(doctype, variant),
     )
     if completion.error:
+        base["_error"] = completion.error
         return Result(record=base, usage=completion.usage, error=completion.error)
 
     try:
@@ -56,10 +65,12 @@ def extract_document(backend, doctype: DocType, pdf_path: str, relative_path: st
         # Structured output should make this impossible; when a backend's schema
         # support is partial it is the first thing to break, so say so plainly.
         preview = completion.text[:120].replace("\n", " ")
+        base["_error"] = f"unparseable JSON: {error}"
         return Result(record=base, usage=completion.usage,
                       error=f"unparseable JSON ({error}): {preview!r}")
 
     if not isinstance(parsed, dict):
+        base["_error"] = f"expected an object, got {type(parsed).__name__}"
         return Result(record=base, usage=completion.usage,
                       error=f"expected an object, got {type(parsed).__name__}")
 

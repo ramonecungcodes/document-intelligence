@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
@@ -49,8 +50,24 @@ def collect(corpus_root, only, limit):
             unknown.add(stem)
             continue
         for record in (records[:limit] if limit else records):
-            jobs.append((doctype, record["file"]))
+            jobs.append((doctype, record["file"], doctype.variant_of(record)))
     return jobs, unknown
+
+
+def _resolve_out(value: str) -> str:
+    """Resolve --out against the reports directory.
+
+    A bare name is the intended usage. Absolute container paths are accepted but are
+    a trap on Git Bash, where MSYS rewrites `/reports/x.jsonl` into a Windows path
+    before Docker ever sees it -- the run then writes inside the container, and `--rm`
+    deletes the results on exit. A rewritten path is detected and pulled back.
+    """
+    if not value:
+        return os.path.join(REPORTS_DIR, "predictions.jsonl")
+    mangled = re.match(r"^[A-Za-z]:[\/]", value)
+    if mangled or not os.path.isabs(value):
+        return os.path.join(REPORTS_DIR, os.path.basename(value))
+    return value
 
 
 def run(args):
@@ -61,11 +78,12 @@ def run(args):
     if not jobs:
         raise SystemExit("nothing to extract")
 
-    out_path = args.out or os.path.join(REPORTS_DIR, "predictions.jsonl")
+    out_path = _resolve_out(args.out)
     if args.dry_run:
         print(f"{len(jobs)} documents (dry run, nothing is called)")
-        for doctype, rel in jobs[:10]:
-            print(f"  {doctype.name:22} {rel}")
+        for doctype, rel, variant in jobs[:10]:
+            label = f"{doctype.name}/{variant}" if variant else doctype.name
+            print(f"  {label:26} {rel}")
         print(f"  ... {len(jobs)} total")
         return 0
 
@@ -86,8 +104,15 @@ def run(args):
     results = []
 
     def work(job):
-        doctype, rel = job
-        return extract_document(backend, doctype, os.path.join(corpus_root, rel), rel)
+        doctype, rel, variant = job
+        return extract_document(backend, doctype, os.path.join(corpus_root, rel), rel,
+                                variant=variant)
+
+    # Stream each prediction to disk as it lands rather than accumulating in memory.
+    # An hour of extraction should not be one crash away from nothing, and a partial
+    # file is scoreable -- the scorer already reports what it could not match.
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    stream = open(out_path, "w", encoding="utf-8", newline="\n")
 
     aborted = ""
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
@@ -96,10 +121,22 @@ def run(args):
             while pending:
                 finished, pending = wait(pending, return_when=FIRST_COMPLETED)
                 for future in finished:
-                    result = future.result()
+                    try:
+                        result = future.result()
+                    except Exception as error:
+                        # A raise here used to escape the loop and silently abandon
+                        # every document still pending -- 32 of 352 on the first full
+                        # run, with the process still exiting 0.
+                        done += 1
+                        failed += 1
+                        print(f"  [{done}/{len(jobs)}] FAILED (unhandled): "
+                              f"{type(error).__name__}: {error}", file=sys.stderr, flush=True)
+                        continue
                     done += 1
                     total.add(result.usage)
                     results.append(result)
+                    stream.write(json.dumps(result.record) + "\n")
+                    stream.flush()
                     name = result.record["file"]
                     if result.error:
                         failed += 1
@@ -121,10 +158,7 @@ def run(args):
         finally:
             pass
 
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    with open(out_path, "w", encoding="utf-8", newline="\n") as handle:
-        for result in results:
-            handle.write(json.dumps(result.record) + "\n")
+    stream.close()
 
     run_path = os.path.splitext(out_path)[0] + ".run.json"
     with open(run_path, "w", encoding="utf-8", newline="\n") as handle:
@@ -203,7 +237,9 @@ def main(argv=None):
     go.add_argument("--corpus", default=CORPUS_ROOT)
     go.add_argument("--only", default="", help="comma-separated label stems")
     go.add_argument("--limit", type=int, default=0, help="first N documents per type")
-    go.add_argument("--out", default=None, help=f"default: {REPORTS_DIR}/predictions.jsonl")
+    go.add_argument("--out", default=None, metavar="NAME",
+                    help=f"file name inside {REPORTS_DIR} "
+                         f"(default: predictions.jsonl)")
     go.add_argument("--extractor", default="", help="which extractor plugin (see di.toml)")
     go.add_argument("--model", default="", help="override the chosen plugin's model")
     go.add_argument("--config", default="", help="path to the manifest (default: di.toml)")

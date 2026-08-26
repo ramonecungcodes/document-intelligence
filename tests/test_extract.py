@@ -52,8 +52,11 @@ class TestSchema:
     def test_schema_matches_the_scorer_field_set(self):
         """Extractor and scorer read the same declaration, so they cannot drift."""
         for name, doctype in REGISTRY.items():
-            declared = {f.name for f in doctype.fields} | {g.name for g in doctype.groups}
+            declared = {f.name for f in doctype.fields_for()} | {g.name for g in doctype.groups}
             assert set(json_schema(doctype)["properties"]) == declared, name
+            for variant in doctype.variants:
+                expected = {f.name for f in doctype.fields_for(variant)} |                            {g.name for g in doctype.groups}
+                assert set(json_schema(doctype, variant)["properties"]) == expected,                     f"{name}/{variant}"
 
     def test_multi_bill_prompt_calls_out_separate_payment(self):
         text = instructions(MULTI_BILL_INVOICE)

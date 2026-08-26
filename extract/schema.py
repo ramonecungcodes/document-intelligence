@@ -36,10 +36,20 @@ DESCRIPTIONS = {
 
 
 def _property(spec: Field) -> dict:
+    """A field's own description wins over the generic one for its kind.
+
+    The generic text says how to format a value; only the field can say which value
+    it wants. Where several fields share a kind, that distinction is the whole ball
+    game -- three identifiers described identically get shuffled.
+    """
     kind = JSON_TYPE.get(spec.kind, "string")
     prop = {"type": [kind, "null"]}
-    if spec.kind in DESCRIPTIONS:
-        prop["description"] = DESCRIPTIONS[spec.kind]
+    description = getattr(spec, "help", "") or DESCRIPTIONS.get(spec.kind, "")
+    if description and getattr(spec, "help", ""):
+        generic = DESCRIPTIONS.get(spec.kind, "")
+        description = f"{description} {generic}".strip()
+    if description:
+        prop["description"] = description
     return prop
 
 
@@ -63,19 +73,22 @@ def _array(group: Group) -> dict:
     }
 
 
-def json_schema(doctype: DocType) -> dict:
-    """The output schema for one document type."""
-    return _object(doctype.fields, doctype.groups)
+def json_schema(doctype: DocType, variant: str = "") -> dict:
+    """The output schema for one document type, narrowed to a variant if it has them."""
+    return _object(doctype.fields_for(variant), doctype.groups)
 
 
-def instructions(doctype: DocType) -> str:
+def instructions(doctype: DocType, variant: str = "") -> str:
     """Field-level guidance appended to the system prompt.
 
     Kept short on purpose: the schema already carries the structure, and a long
     restatement of it competes with the document for the model's attention.
     """
+    label = doctype.name.replace("_", " ")
+    if variant:
+        label = f"{variant.replace('_', ' ')} {label}"
     lines = [
-        f"You are extracting the fields of a {doctype.name.replace('_', ' ')}.",
+        f"You are extracting the fields of a {label}.",
         "",
         "Rules:",
         "- Copy values exactly as they appear on the document. Do not reformat dates,",

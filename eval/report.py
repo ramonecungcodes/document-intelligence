@@ -109,7 +109,8 @@ class SliceScore:
     name: str
     dimension: str = "doc_type"
     docs: int = 0
-    scored: int = 0        # documents a prediction was supplied for
+    scored: int = 0        # documents graded
+    failed: int = 0        # extraction errored; not graded, counted here instead
     fields: dict = field(default_factory=dict)
     groups: dict = field(default_factory=dict)
 
@@ -127,6 +128,7 @@ class SliceScore:
             "dimension": self.dimension,
             "documents": self.docs,
             "scored": self.scored,
+            "failed": self.failed,
             "field_accuracy": _rate(match, n),
             "field_accuracy_nonblank": _rate(match - blank, n - blank),
             "field_exact": _rate(exact, n),
@@ -193,6 +195,7 @@ class ScoreReport:
         return {
             "documents": sum(s.docs for s in by_type),
             "scored": sum(s.scored for s in by_type),
+            "failed": sum(s.failed for s in by_type),
             "fields_graded": n,
             "field_accuracy": _rate(match, n),
             "field_accuracy_nonblank": _rate(match - blank, n - blank),

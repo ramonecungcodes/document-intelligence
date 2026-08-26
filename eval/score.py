@@ -131,9 +131,20 @@ def score_group(predicted: dict, truth: dict, group: Group, bucket: dict) -> Non
             score_group(predicted_row, truth_row, nested, target.groups)
 
 
+def failed(predicted: dict) -> bool:
+    """A stub written by a failed extraction, not an answer to grade."""
+    return bool(predicted.get("_error"))
+
+
 def score_document(predicted: dict, truth: dict, spec: DocType, slice_score: SliceScore) -> None:
+    if failed(predicted):
+        slice_score.failed += 1
+        return
     slice_score.scored += 1
-    score_fields(predicted, truth, spec.fields, slice_score.fields)
+    # Variant types keep most of their fields on the variant, not the shared tuple --
+    # grading spec.fields alone would silently score a W-9 on one field.
+    score_fields(predicted, truth, spec.fields_for(spec.variant_of(truth)),
+                 slice_score.fields)
     for group in spec.groups:
         score_group(predicted, truth, group, slice_score.groups)
 
@@ -211,7 +222,7 @@ def score(corpus_root: str, predictions: list, only=None, provenance=None) -> Sc
 
             if predicted is None:
                 unmatched += 1
-            else:
+            elif not failed(predicted):
                 detection_pairs.append((predicted, truth))
                 if "irregularities" in predicted:
                     any_detection_prediction = True
@@ -219,6 +230,12 @@ def score(corpus_root: str, predictions: list, only=None, provenance=None) -> Sc
     if unmatched:
         report.warnings.append(
             f"{unmatched} corpus documents had no matching prediction (joined on `file`)"
+        )
+    errored = sum(1 for record in by_file.values() if failed(record))
+    if errored:
+        report.warnings.append(
+            f"{errored} predictions were extraction failures and were not graded "
+            f"(they are counted as `failed`, not as wrong answers)"
         )
     extra = len(by_file) - (len(detection_pairs))
     if extra > 0:

@@ -14,8 +14,10 @@ extractor = "openai"
 
 [extractors.openai]
 # Anything speaking OpenAI chat-completions: LM Studio, Ollama, vLLM, llama.cpp.
-base_url = "https://ai.ramonecung.com/v1"
-model = "qwen/qwen3-vl-8b"
+# A Tailscale address rather than host.docker.internal: it resolves the same from the
+# host, from a container, and from another machine on the tailnet.
+base_url = "http://100.117.175.14:1234/v1"
+model = "qwen/qwen3.5-9b"
 api_key = "${DI_OPENAI_API_KEY}"
 max_tokens = 8000
 timeout = 600
