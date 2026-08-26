@@ -8,6 +8,7 @@ import pytest
 
 from core.rules import RULES, Registry, Rule, RuleReport
 from extract.rules.empty_rows import drop_empty_rows
+from extract.rules.labels import strip_identifier_labels
 from extract.rules.rollup import drop_rollup_rows
 
 
@@ -67,7 +68,8 @@ class TestEmptyRowsRule:
 
 class TestRegistry:
     def test_both_shipped_rules_are_registered(self):
-        assert {"drop_rollup_rows", "drop_empty_rows"} <= set(RULES.names())
+        assert {"drop_rollup_rows", "drop_empty_rows",
+                "strip_identifier_labels"} <= set(RULES.names())
 
     def test_rules_are_on_unless_switched_off(self):
         names = [r.name for r in RULES.enabled({})]
@@ -154,3 +156,100 @@ class TestExampleTemplate:
         assert drop_zero_quantity_rows({"line_items": None}) == 0
         assert drop_zero_quantity_rows({"line_items": ["not a dict"]}) == 0
         assert drop_zero_quantity_rows({"line_items": [{"quantity": None}]}) == 0
+
+
+class TestIdentifierLabelRule:
+    """A label printed in front of an identifier is furniture, not part of the value."""
+
+    def mb(self, **section):
+        return {"doc_type": "multi_bill_invoice", "sections": [section]}
+
+    def test_drops_a_single_word_label(self):
+        rec = self.mb(reference_number="METER M3947745")
+        assert strip_identifier_labels(rec) == 1
+        assert rec["sections"][0]["reference_number"] == "M3947745"
+
+    def test_drops_a_multi_word_label(self):
+        rec = self.mb(reference_number="Bill of lading C-59602")
+        assert strip_identifier_labels(rec) == 1
+        assert rec["sections"][0]["reference_number"] == "C-59602"
+
+    def test_handles_a_slashed_identifier(self):
+        rec = self.mb(reference_number="CIRCUIT EQP/24046/DS1")
+        assert strip_identifier_labels(rec) == 1
+        assert rec["sections"][0]["reference_number"] == "EQP/24046/DS1"
+
+    def test_leaves_a_clean_identifier_alone(self):
+        rec = self.mb(reference_number="C-59602", account_number="UTL-679707")
+        assert strip_identifier_labels(rec) == 0
+
+    def test_leaves_an_ambiguous_shape_alone(self):
+        """Not every space is a label; only word(s) then a token with a digit."""
+        for value in ("C-59602 A1", "M394 M395", "12345 Widget"):
+            rec = self.mb(reference_number=value)
+            assert strip_identifier_labels(rec) == 0, value
+
+    def test_leaves_a_trailing_word_alone(self):
+        rec = self.mb(reference_number="M3947745 METER")
+        assert strip_identifier_labels(rec) == 0
+
+    def test_does_not_touch_text_fields(self):
+        """service_location has the same defect and is deliberately out of scope."""
+        rec = self.mb(service_location="SITE 6945 Riverside Dr", cost_center="CC-2040 Ops")
+        assert strip_identifier_labels(rec) == 0
+        assert rec["sections"][0]["service_location"] == "SITE 6945 Riverside Dr"
+
+    def test_reaches_top_level_fields(self):
+        rec = {"doc_type": "invoice", "invoice_number": "Invoice INV-4471"}
+        assert strip_identifier_labels(rec) == 1
+        assert rec["invoice_number"] == "INV-4471"
+
+    def test_covers_variant_only_fields(self):
+        rec = {"doc_type": "form", "form_type": "claim", "claim_number": "Claim CLM-8812"}
+        assert strip_identifier_labels(rec) == 1
+
+    def test_an_unknown_doc_type_is_a_no_op(self):
+        assert strip_identifier_labels({"doc_type": "not_a_type", "x": "A 1"}) == 0
+        assert strip_identifier_labels({}) == 0
+
+    def test_survives_the_absences_the_contract_warns_about(self):
+        assert strip_identifier_labels({"doc_type": "multi_bill_invoice"}) == 0
+        assert strip_identifier_labels(
+            {"doc_type": "multi_bill_invoice", "sections": None}) == 0
+        assert strip_identifier_labels(
+            {"doc_type": "multi_bill_invoice", "sections": ["nope"]}) == 0
+        assert strip_identifier_labels(
+            {"doc_type": "multi_bill_invoice",
+             "sections": [{"reference_number": None}]}) == 0
+
+    def test_no_corpus_identifier_would_be_altered(self):
+        """The safety argument in the module docstring, pinned as a test."""
+        import glob
+        import json
+        import os
+        from core.doctypes import REGISTRY
+        from extract.rules.labels import _identifier_fields
+        root = os.environ.get("DI_DATASET_ROOT", "/data")
+        paths = glob.glob(os.path.join(root, "labels", "*.json"))
+        if not paths:
+            pytest.skip("no generated corpus available")
+        checked = 0
+        for path in paths:
+            for truth in json.load(open(path, encoding="utf-8")):
+                doctype = REGISTRY.get(truth.get("doc_type"))
+                if doctype is None:
+                    continue
+                names = _identifier_fields(doctype)
+                stack = [truth]
+                while stack:
+                    row = stack.pop()
+                    for name in names:
+                        value = row.get(name)
+                        if isinstance(value, str) and value.strip():
+                            checked += 1
+                            from extract.rules.labels import _strip
+                            assert _strip(value.strip()) == value.strip(), \
+                                f"rule would alter ground truth {name}={value!r}"
+                    for group in ("sections", "line_items", "work_history"):
+                        stack += [r for r in row.get(group) or [] if isinstance(r, dict)]
+        assert checked > 500, f"only checked {checked} identifiers"

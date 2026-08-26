@@ -12,6 +12,6 @@ makes the extractor look better and the evaluation meaningless.
 """
 from core.rules import RULES
 
-from extract.rules import empty_rows, rollup   # noqa: F401  (registration side effect)
+from extract.rules import empty_rows, labels, rollup   # noqa: F401  (registration side effect)
 
 __all__ = ["RULES"]
