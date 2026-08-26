@@ -576,7 +576,7 @@ MULTIBILL_VENDORS = [
         dict(name="Snow &amp; Ice", code="SNW", items=[("Plow event, per push",210.00,395.00),
              ("Ice melt application",95.00,180.00)])]),
     dict(name="Vanguard Freight Systems", tag="Freight billing by shipment",
-         color="#334155", accent="#0e7490", inv_prefix="VFS", acct_prefix="SHP", ref_label="BOL",
+         color="#334155", accent="#0e7490", inv_prefix="VFS", acct_prefix="SHP", ref_label="Bill of lading",
          multisite=True, services=[
         dict(name="LTL Shipment", code="LTL", items=[("Linehaul charge",340.00,880.00),
              ("Fuel surcharge",48.00,140.00),("Liftgate service",65.00,95.00),("Detention, per hr",55.00,85.00)]),
@@ -665,6 +665,18 @@ def _mb_period(sec):
     b = d(datetime.date.fromisoformat(sec["service_period_end"])) if sec["service_period_end"] else "?"
     return f"{esc(a)} &ndash; {esc(b)}"
 
+def _mb_site(sec):
+    """The service address behind a SITE label, or nothing at all.
+
+    Most sections have no per-service address and must render none: the extractor is
+    asked to return null for those, and a corpus that prints something anyway would be
+    grading the model against a page that disagrees with its own labels.
+    """
+    if not sec.get("service_location"):
+        return ""
+    return " &middot; <span class='lbl'>Site</span> " + esc(sec["service_location"])
+
+
 def _mb_ident(sec, sep="&nbsp;&nbsp;"):
     """The section's identifiers, each behind its own label.
 
@@ -719,7 +731,7 @@ def mb_html(layout, vendor, x):
             f"<div style='font-weight:700;color:{color}'>{esc(s['service_type'])}</div>"
             f"<div class='muted' style='margin:2px 0'>{_mb_ident(s)}</div>"
             f"<div class='muted'>Service period {_mb_period(s)}"
-            f"{(' &middot; ' + esc(s['service_location'])) if s['service_location'] else ''}</div>"
+            f"{_mb_site(s)}</div>"
             f"<table><thead><tr style='border-bottom:1px solid #999'><th style='text-align:left'>Description</th>"
             f"<th class='r'>Qty</th><th class='r'>Unit</th><th class='r'>Amount</th></tr></thead>"
             f"<tbody>{_rows(s['line_items'])}</tbody></table>"
@@ -749,7 +761,7 @@ def mb_html(layout, vendor, x):
             f"<tr><td class='lbl'>{esc(s['reference_label'])}</td><td><b>{esc(s['reference_number'])}</b></td>"
             f"<td class='lbl' style='padding-left:22px'>Cost centre</td><td>{esc(s['cost_center'])}</td></tr>"
             f"<tr><td class='lbl'>Service period</td><td colspan='3'>{_mb_period(s)}"
-            f"{(' &middot; ' + esc(s['service_location'])) if s['service_location'] else ''}</td></tr>"
+            f"{_mb_site(s)}</td></tr>"
             f"</table>"
             f"<table style='margin-top:8px'><thead><tr style='border-bottom:1px solid #bbb'>"
             f"<th style='text-align:left'>Description</th><th class='r'>Qty</th><th class='r'>Unit</th>"
