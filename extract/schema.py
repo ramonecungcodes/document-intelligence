@@ -66,9 +66,16 @@ def _object(fields, groups) -> dict:
 
 
 def _array(group: Group) -> dict:
+    """A repeating group.
+
+    The group's own description matters most where rows are easy to confuse with
+    something that merely looks like a row -- a totals line sits in the same table as
+    the items it sums, and nothing but a description says which is which.
+    """
+    default = f"One entry per {group.name.replace('_', ' ').rstrip('s')} on the document."
     return {
         "type": "array",
-        "description": f"One entry per {group.name.replace('_', ' ').rstrip('s')} on the document.",
+        "description": getattr(group, "help", "") or default,
         "items": _object(group.fields, group.groups),
     }
 
@@ -100,12 +107,14 @@ def instructions(doctype: DocType, variant: str = "") -> str:
         "  disagrees with the line items, return the stated total; detecting that",
         "  disagreement is somebody else's job.",
     ]
-    if doctype.groups:
-        for group in doctype.groups:
-            lines.append(
-                f"- `{group.name}`: one entry per row, in the order they appear. "
-                f"Include every row."
-            )
+    for group in doctype.groups:
+        detail = getattr(group, "help", "")
+        lines.append(f"- `{group.name}`: one entry per row, in the order they appear. "
+                     f"Include every row." + (f" {detail}" if detail else ""))
+        for nested in group.groups:
+            nested_detail = getattr(nested, "help", "")
+            lines.append(f"- `{group.name}[].{nested.name}`: likewise."
+                         + (f" {nested_detail}" if nested_detail else ""))
     if any(g.name == "sections" for g in doctype.groups):
         lines += [
             "",

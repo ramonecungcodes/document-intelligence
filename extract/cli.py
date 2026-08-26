@@ -34,6 +34,7 @@ from core.plugins import describe
 from eval.score import load_corpus
 from extract import schema as schema_mod
 from extract import backends
+from extract.rules import RULES
 from extract.backends import Usage
 from extract.runner import extract_document
 
@@ -96,6 +97,7 @@ def run(args):
         overrides["no_think"] = True
     backend = backends.build(config=config_mod.load(args.config),
                              plugin=args.extractor, overrides=overrides)
+    rules_fired = {}
     budget = f" · abort past {args.abort_after}s/doc" if args.abort_after else ""
     print(f"{len(jobs)} documents · {backend.describe()} · "
           f"{args.concurrency} at a time{budget}")
@@ -103,10 +105,18 @@ def run(args):
     done = failed = skipped = 0
     results = []
 
+    config = config_mod.load(args.config)
+    rule_settings = config.rules()
+    try:
+        active = [r.name for r in RULES.enabled(rule_settings)]
+    except ValueError as error:
+        raise SystemExit(f"configuration error: {error}")
+    print(f"  rules: {', '.join(active) or 'none'}")
+
     def work(job):
         doctype, rel, variant = job
         return extract_document(backend, doctype, os.path.join(corpus_root, rel), rel,
-                                variant=variant)
+                                variant=variant, rule_settings=rule_settings)
 
     # Stream each prediction to disk as it lands rather than accumulating in memory.
     # An hour of extraction should not be one crash away from nothing, and a partial
@@ -137,6 +147,9 @@ def run(args):
                     results.append(result)
                     stream.write(json.dumps(result.record) + "\n")
                     stream.flush()
+                    if result.rules is not None:
+                        for rule_name, n in result.rules.to_dict().items():
+                            rules_fired[rule_name] = rules_fired.get(rule_name, 0) + n
                     name = result.record["file"]
                     if result.error:
                         failed += 1
@@ -167,6 +180,7 @@ def run(args):
             "corpus": corpus_root,
             "documents": len(jobs),
             "aborted": aborted or None,
+            "rules": {"enabled": active, "changes": rules_fired},
             "failed": failed,
             "skipped_no_text_layer": skipped,
             "usage": total.to_dict(),
@@ -180,6 +194,9 @@ def run(args):
         print()
     print(f"wrote {out_path}")
     print(f"      {run_path}")
+    if rules_fired:
+        detail = ", ".join(f"{k} x{v}" for k, v in sorted(rules_fired.items()))
+        print(f"  rules changed: {detail}")
     print(f"  extracted {done - failed - skipped}/{len(jobs)}"
           + (f", {failed} failed" if failed else "")
           + (f", {skipped} had no text layer" if skipped else ""))
@@ -215,6 +232,25 @@ def show_config(args):
             except Exception as error:
                 print(f"  ERROR: {error}")
         print()
+    return 0
+
+
+def show_rules(args):
+    """Every registered rule, which types it touches, and whether it is on."""
+    config = config_mod.load(args.config)
+    settings = config.rules()
+    try:
+        active = {r.name for r in RULES.enabled(settings)}
+    except ValueError as error:
+        raise SystemExit(f"configuration error: {error}")
+    print(f"manifest: {config.path or '(none)'}")
+    print()
+    for rule in RULES:
+        mark = "on " if rule.name in active else "off"
+        scope = ", ".join(rule.applies_to) if rule.applies_to else "all types"
+        print(f"  [{mark}] {rule.name:<22} {scope}")
+        if rule.help:
+            print(f"        {rule.help}")
     return 0
 
 
@@ -256,6 +292,9 @@ def main(argv=None):
     conf = sub.add_parser("config", help="show the resolved manifest and every setting")
     conf.add_argument("--config", default="")
 
+    rl = sub.add_parser("rules", help="show the post-extraction rules and their scope")
+    rl.add_argument("--config", default="")
+
     args = parser.parse_args(argv)
     args.only = [s.strip() for s in args.only.split(",") if s.strip()] or None \
         if hasattr(args, "only") else None
@@ -263,6 +302,8 @@ def main(argv=None):
         return run(args)
     if args.command == "config":
         return show_config(args)
+    if args.command == "rules":
+        return show_rules(args)
     return show_schema(args)
 
 

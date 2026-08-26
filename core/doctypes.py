@@ -37,6 +37,8 @@ class Group:
     fields: tuple = ()
     groups: tuple = ()          # nested groups, e.g. line items inside a section
     keys: tuple = ()            # fields that identify a row, if any
+    help: str = ""              # what counts as a row -- and, as often matters more,
+                                # what does not
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,10 @@ class DocType:
 
 LINE_ITEMS = Group(
     name="line_items",
+    help=("One entry per billed item or service line. Summary rows are not line items: "
+          "skip Subtotal, Tax, Total, Due, Service total and any similar roll-up, even "
+          "when they appear in the same table as the items. Those figures are captured "
+          "by the subtotal, tax and total fields."),
     fields=(
         Field("description", "text"),
         Field("quantity", "number", tolerance=0.001),

@@ -28,6 +28,7 @@ class Config:
     path: Optional[str] = None
     pipeline: dict = field(default_factory=dict)
     blocks: dict = field(default_factory=dict)      # slot -> plugin -> settings block
+    raw_rules: dict = field(default_factory=dict)   # rule name -> enabled
 
     def chosen(self, slot: str, override: str = "") -> Optional[str]:
         """Which plugin fills a slot: an explicit override, then the manifest."""
@@ -35,6 +36,10 @@ class Config:
             return override
         env = os.environ.get(f"DI_{slot.upper()}")
         return env or self.pipeline.get(slot)
+
+    def rules(self) -> dict:
+        """The [rules] block: rule name -> on/off. Absent means every rule is on."""
+        return dict(self.raw_rules)
 
     def block(self, slot: str, plugin: str) -> dict:
         return dict(self.blocks.get(slot, {}).get(plugin, {}))
@@ -85,4 +90,5 @@ def load(path: str = "") -> Config:
         if isinstance(section, dict):
             blocks[slot] = {name: value for name, value in section.items()
                             if isinstance(value, dict)}
-    return Config(path=found, pipeline=pipeline, blocks=blocks)
+    return Config(path=found, pipeline=pipeline, blocks=blocks,
+                  raw_rules=data.get("rules", {}) or {})

@@ -29,3 +29,15 @@ model = "claude-opus-5"
 effort = "high"
 max_tokens = 8000
 api_key = "${ANTHROPIC_API_KEY}"
+
+# ------------------------------------------------------------------ rules
+# Deterministic cleanup applied to every extraction. On by default -- a rule ships
+# because it is correct, so switching one off is the deliberate act. `extract.cli rules`
+# lists them with their scope.
+#
+# Only things true by definition belong here. A rule that corrects the model's
+# judgement makes the extractor look better and the evaluation meaningless.
+
+[rules]
+drop_rollup_rows = true
+drop_empty_rows = true

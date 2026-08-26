@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 
 from core.doctypes import DocType
 from extract import schema as schema_mod
+from extract.rules import RULES
 from extract.backends import Usage
 from extract.text import read_pdf
 
@@ -30,10 +31,11 @@ class Result:
     usage: Usage = field(default_factory=Usage)
     error: str = ""
     skipped: str = ""
+    rules: object = None        # RuleReport: what deterministic cleanup changed
 
 
 def extract_document(backend, doctype: DocType, pdf_path: str, relative_path: str,
-                     variant: str = "") -> Result:
+                     variant: str = "", rule_settings=None) -> Result:
     """Read one PDF and return a prediction record shaped like a corpus label.
 
     `variant` narrows the schema for types that have them -- a W-9 is asked for the ten
@@ -77,4 +79,11 @@ def extract_document(backend, doctype: DocType, pdf_path: str, relative_path: st
     if completion.truncated:
         base["_note"] = "truncated at max tokens"
     base.update(parsed)
-    return Result(record=base, usage=completion.usage)
+
+    # Deterministic cleanup, declared per document type. What each rule changed is
+    # recorded on the prediction rather than absorbed, so a run can never quietly
+    # flatter its own numbers.
+    report = RULES.apply(base, doctype.name, rule_settings)
+    if report.total:
+        base["_rules_applied"] = report.to_dict()
+    return Result(record=base, usage=completion.usage, rules=report)
