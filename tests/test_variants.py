@@ -92,7 +92,16 @@ class TestSectionIdentifiers:
         assert len(set(descriptions.values())) == 3, \
             "identifiers share a description; the model cannot tell them apart"
 
-    def test_reference_label_is_declared(self):
-        """Without it the model cannot know whether to look for a meter or a circuit."""
+    def test_reference_label_is_not_extracted(self):
+        """It is the name of the value beside it, not a value.
+
+        The page prints `METER M3947745`. Asked for a "reference label" the model
+        returns the whole phrase, because on the document that word is the label for
+        the number -- there is no separate value to transcribe. It stays in the corpus
+        as ground truth about the document and out of the extraction schema.
+        """
         props = json_schema(REGISTRY["multi_bill_invoice"])["properties"]
-        assert "reference_label" in props["sections"]["items"]["properties"]
+        section = props["sections"]["items"]["properties"]
+        assert "reference_label" not in section
+        # The number it labels is still asked for, and still says what it is.
+        assert "meter" in section["reference_number"]["description"].lower()

@@ -166,17 +166,24 @@ MULTI_BILL_INVOICE = DocType(
                       help="The account this service is billed to and paid against, "
                            "shown in the Account column, e.g. UTL-679707 or BTN-465511. "
                            "This is the number a payment is routed by."),
-                Field("reference_label", "text",
-                      help="What kind of reference this service carries: Meter, "
-                           "Circuit, BOL, Route or Contract."),
+                # reference_label is deliberately not extracted. On the page the
+                # word IS the label for the number beside it -- "METER M3947745" --
+                # so asking for it as a value asks the model to transcribe furniture,
+                # and it reliably returns the whole phrase instead. The corpus keeps
+                # it as ground truth about the document; the extractor does not ask.
                 Field("reference_number", "identifier",
                       help="The reference identifier itself, printed after its label, "
                            "e.g. M3947745 for a meter or MOB/76795/DS1 for a circuit. "
                            "Not the account number."),
                 Field("service_location", "text",
-                      help="Site address for this service, when one is shown."),
-                Field("cost_center", "identifier",
-                      help="Internal cost centre code, e.g. CC-4120 Logistics."),
+                      help="Street address of the site this service is delivered to, "
+                           "only when the document shows one for this service. Many "
+                           "bills have no per-service site; return null rather than "
+                           "substituting a cost centre or the billing address."),
+                Field("cost_center", "text",
+                      help="The cost centre exactly as printed, both the code and the "
+                           "name that follows it, e.g. 'CC-4120 Logistics' -- not the "
+                           "code alone."),
                 Field("service_period_start", "date",
                       help="First date of this service's billing period."),
                 Field("service_period_end", "date",
