@@ -64,8 +64,22 @@ def extract_document(backend, doctype: DocType, pdf_path: str, relative_path: st
     try:
         parsed = json.loads(completion.text)
     except json.JSONDecodeError as error:
-        # Structured output should make this impossible; when a backend's schema
-        # support is partial it is the first thing to break, so say so plainly.
+        # Two very different faults land here and must not be reported alike.
+        #
+        # A truncated answer is a budget problem: the model was still writing when it
+        # hit max_tokens, so the JSON is valid right up to the cut. Every one of the
+        # twelve resumes that failed the first full corpus run was this, and each was
+        # reported as "unparseable JSON" -- which reads like a broken model or a broken
+        # schema and sends you looking in entirely the wrong place. The fix is a bigger
+        # budget, so the message has to say so.
+        if completion.truncated:
+            detail = (f"ran out of tokens mid-answer after {len(completion.text)} "
+                      f"characters; raise max_tokens")
+            base["_error"] = f"truncated: {detail}"
+            return Result(record=base, usage=completion.usage, error=f"truncated: {detail}")
+
+        # Anything still here is genuinely malformed rather than merely cut off, which
+        # is what a backend with only partial schema support looks like.
         preview = completion.text[:120].replace("\n", " ")
         base["_error"] = f"unparseable JSON: {error}"
         return Result(record=base, usage=completion.usage,

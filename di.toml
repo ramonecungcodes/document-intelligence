@@ -25,7 +25,11 @@ extractor = "openai"
 base_url = "https://ai.ramonecung.com/v1"
 model = "qwen/qwen3-vl-8b"
 api_key = "${DI_OPENAI_API_KEY}"
-max_tokens = 8000
+# Resumes are the long tail: a full work history plus skills runs past 26,000
+# characters of JSON, and at 8000 the model was still writing when the budget ran out
+# -- twelve of forty failed that way on the first full corpus run. Thinking tokens
+# come out of the same allowance, so the headroom has to cover both.
+max_tokens = 16000
 timeout = 600
 json_mode = "auto"
 no_think = false

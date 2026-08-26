@@ -208,3 +208,47 @@ class TestSchemaRejectionFallback:
         result = backend.complete("sys", "user", {})
         assert backend.tried == ["schema"]
         assert result.error
+
+
+class TestTruncationIsNotMalformedOutput:
+    """A cut-off answer and a broken one need different messages.
+
+    All twelve resume failures in the first full corpus run were the model still
+    writing when it hit max_tokens. Every one was reported as "unparseable JSON",
+    which reads like a broken schema and sends you to the wrong file. The fix is a
+    bigger budget, so the error has to name the budget.
+    """
+
+    def result_for(self, text, truncated):
+        from extract.backends import Completion, Usage
+        from extract.runner import extract_document
+        from core.doctypes import RESUME
+        import os
+
+        class Backend:
+            def complete(self, system, user, schema):
+                return Completion(text=text, usage=Usage(calls=1),
+                                  truncated=truncated, mode="schema")
+
+        sample = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "tools", "document-generator", "samples", "invoice.pdf")
+        if not os.path.exists(sample):
+            pytest.skip("no sample document available")
+        return extract_document(Backend(), RESUME, sample, "resumes/x.pdf")
+
+    def test_a_cut_off_answer_reports_the_budget(self):
+        result = self.result_for('{"name": "Ada Lovel', truncated=True)
+        assert "truncated" in result.error
+        assert "max_tokens" in result.error
+        assert "unparseable" not in result.error
+
+    def test_genuinely_malformed_output_still_says_so(self):
+        result = self.result_for("Sure! Here is the JSON you asked for.", truncated=False)
+        assert "unparseable JSON" in result.error
+        assert "truncated" not in result.error
+
+    def test_a_complete_answer_is_unaffected(self):
+        result = self.result_for('{"name": "Ada Lovelace"}', truncated=False)
+        assert not result.error
+        assert result.record["name"] == "Ada Lovelace"
