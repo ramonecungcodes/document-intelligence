@@ -183,6 +183,132 @@ Runs report what they cost:
 `python -m extract.cli schema --type multi_bill_invoice` prints the generated schema
 and system prompt without calling anything.
 
+## Results
+
+Phase 1, 352 documents, `qwen3-vl-8b` running locally through an OpenAI-compatible
+endpoint. Both columns are the same scorer over both prediction files, because the
+scorer changed during the phase and comparing across versions would be meaningless.
+
+| slice | first baseline | current |
+|---|---|---|
+| **overall field accuracy** | 0.928 | **0.973** |
+| purchase orders | 0.966 | **1.000** |
+| multi-bill invoices | 0.567 | **0.977** |
+| invoices | 0.976 | 0.979 |
+| forms | 0.977 | 0.975 |
+| resumes | 0.803 | 0.832 |
+| documents scored / failed | 329 / 8 | 340 / 12 |
+
+Almost all of the gain is multi-bill invoices, and none of it came from a better model.
+Seven consecutive multi-bill defects were traced, and every one was in the harness: a
+field described identically to two siblings so the model rotated them, a field the
+generator never printed, a label that was a prefix of its own value, a description
+whose generic half contradicted its specific half. The model was reading the documents
+correctly the whole time and being asked the wrong questions.
+
+The remaining 12 failures are a single cause -- long resumes exceeding the token budget
+mid-answer -- which the runner used to report as malformed JSON.
+
+### Held out
+
+Every fix above was developed against the same 12 multi-bill documents, which is how
+you fit noise. The other 28 in the corpus were never extracted until the phase ended:
+
+| field | fitted (12 docs) | held out (28 docs) |
+|---|---|---|
+| `reference_number` | 1.000 | 1.000 |
+| `cost_center` | 0.778 | 0.800 |
+| `service_location` | 0.556 | 0.600 |
+| line items (4 fields, 184 rows) | 1.000 | 1.000 / 0.995 |
+
+No degradation. The two weak fields stayed weak at the same rate, which is the right
+kind of boring: it says the gap is a property of the task rather than of the sample.
+
+### The extractor ablation
+
+Same 12 documents, same prompts, three models:
+
+| model | completed | output tokens | wall clock | notes |
+|---|---|---|---|---|
+| `qwen3-vl-8b` | 12/12 | 10,769 | 684s | the baseline |
+| `qwen3-vl-30b` | 12/12 | 10,309 | 581s | **worse**, and in the same places |
+| `deepseek-r1-8b` | 3/12 | 82,210 | 4,393s | 95.7% of output was reasoning |
+
+Four times the parameters made it worse, not better -- more truncation errors, plus two
+arithmetic mistakes the smaller model did not make. The reasoning model spent nearly
+all of its budget thinking and ran out of tokens mid-answer on three quarters of the
+documents. Reading a value printed on a page does not benefit from deliberation.
+
+One caveat stated rather than buried: the reasoning model ran unconstrained, because
+that endpoint rejects the schema, so its accuracy is not a like-for-like comparison.
+Its token cost and completion rate are unaffected by that and stand on their own.
+
+### Knowing what it does not know
+
+A single accuracy figure charges the same penalty for a value that was missed and a
+value that was invented. Those are not equally bad -- a blank field is honest and gets
+looked at, a confident wrong one flows downstream unchallenged -- so fields the
+document may legitimately omit are also scored on whether the extractor noticed:
+
+| field | absent cases | invented | copied from a neighbour |
+|---|---|---|---|
+| `co_applicant_name` | 25 | 1.000 | 0.000 |
+| `service_location` | 46 | 1.000 | 0.804 |
+| `business_name` | 16 | 0.938 | 0.000 |
+| `ssn` / `ein` | 20 | **0.000** | 0.000 |
+
+Two different failures. `service_location` fills an empty slot from the field next to
+it; `co_applicant_name` invents a person outright on every loan application that has
+none. Both were invisible in an accuracy column, and both were being counted correctly
+the whole time -- the scorer recorded them from the first version and the renderer
+never printed them.
+
+`ssn` and `ein` are the reason this is a design problem rather than a model limit. They
+are mutually exclusive on a W-9, and the extractor abstains on the absent one every
+time. The same model, on the same run, knows how to return nothing.
+
+### Asking a different question
+
+Three rounds of rewriting told the model, in escalating detail, that absence was normal
+and that borrowing a cost centre was wrong. The last of them named the exact wrong
+answers. Those rewrites moved the count 16, 16, 16. A model four times larger also
+produced 16.
+
+So the ask changed shape instead. A field the document may legitimately omit is no
+longer a nullable slot; it is a decision the model has to return:
+
+```json
+"service_location": { "status": "present | absent | unclear", "value": null }
+```
+
+Same model, same documents, same prompt text:
+
+| field | invented, before | invented, after |
+|---|---|---|
+| `co_applicant_name` | 1.000 | **0.000** |
+| `business_name` | 0.938 | **0.000** |
+| `service_location` | 1.000 | **0.312** |
+| `ssn` / `ein` (control) | 0.000 | 0.000 |
+
+Outright fabrication stopped completely. `co_applicant_name` has no field description
+at all -- it was left undocumented on purpose, so the typed decision was the only thing
+that changed. `service_location` improved but is not fixed: where the borrowed value
+sits physically beside the field on the page, one in three still gets taken.
+
+The runner collapses the decision back to a plain value, so rules, scorer and stored
+records never see the shape. `unclear` is discarded rather than kept, because this
+field is worth optimising for precision -- an invented address flows downstream
+unchallenged while a blank one gets looked at -- and it stays a distinct answer because
+it is what confidence routing consumes later.
+
+The general lesson is the one the whole phase kept teaching. Every defect found here
+was in the harness, not the model: a self-contradicting description, a field the
+generator never printed, a key the schema asked the model to supply after using it to
+choose that schema, a counter recorded on every run and never printed. Nullability was
+never the missing piece. The type already permitted null and the prose already begged
+for it. What the model could not do was return an answer the schema had no way to ask
+for.
+
 ## Why the corpus comes first
 
 The build order is driven by **what risk each phase retires**, and every phase ends with
