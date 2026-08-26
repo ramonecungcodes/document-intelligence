@@ -125,3 +125,56 @@ class TestDescribe:
         assert "[openai]" in text
         assert "required" in text
         assert "secret" in text
+
+
+class TestEndpointCheck:
+    """`config --check` asks the endpoint whether it serves the model we named.
+
+    The manifest pinned qwen/qwen3.5-9b -- a model the server had never heard of --
+    and a base_url pointing at a workstation, and it went unnoticed because every run
+    overrode both from the environment. It worked perfectly for the one person who
+    knew the right values and failed on document one for everyone else. Nothing
+    offline can catch that, which is the whole reason for a live check.
+    """
+
+    def config_naming(self, model):
+        from core.config import Config
+        return Config(path="test.toml", pipeline={"extractor": "openai"},
+                      blocks={"extractor": {"openai": {
+                          "model": model, "base_url": "http://x/v1", "api_key": "k"}}})
+
+    def check(self, monkeypatch, model, available):
+        from extract import cli
+        from extract import backends
+
+        class Backend:
+            def __init__(self):
+                self.model = model
+
+            def available_models(self):
+                return available
+
+        monkeypatch.setattr(backends, "build", lambda **kw: Backend())
+        return cli._check_endpoint(self.config_naming(model))
+
+    def test_a_served_model_passes(self, monkeypatch):
+        assert self.check(monkeypatch, "qwen/qwen3-vl-8b",
+                          ["qwen/qwen3-vl-8b", "other"]) == 0
+
+    def test_a_model_the_endpoint_lacks_fails(self, monkeypatch):
+        assert self.check(monkeypatch, "qwen/qwen3.5-9b",
+                          ["qwen/qwen3-vl-8b", "qwen/qwen3.8-27b"]) == 1
+
+    def test_an_unreachable_endpoint_fails_rather_than_passing_quietly(self, monkeypatch):
+        """An empty list means we learned nothing, which is not the same as ok."""
+        assert self.check(monkeypatch, "qwen/qwen3-vl-8b", []) == 1
+
+    def test_a_backend_that_cannot_be_built_fails(self, monkeypatch):
+        from extract import cli
+        from extract import backends
+
+        def boom(**kw):
+            raise ValueError("no api key")
+
+        monkeypatch.setattr(backends, "build", boom)
+        assert cli._check_endpoint(self.config_naming("m")) == 1

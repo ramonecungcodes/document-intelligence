@@ -14,10 +14,16 @@ extractor = "openai"
 
 [extractors.openai]
 # Anything speaking OpenAI chat-completions: LM Studio, Ollama, vLLM, llama.cpp.
-# A Tailscale address rather than host.docker.internal: it resolves the same from the
+# A named endpoint rather than host.docker.internal: it resolves the same from the
 # host, from a container, and from another machine on the tailnet.
-base_url = "http://100.117.175.14:1234/v1"
-model = "qwen/qwen3.5-9b"
+#
+# These two must name something the endpoint actually serves. They previously did not
+# -- the model was one no longer loaded and the base_url pointed at a workstation --
+# and every run overrode both from the environment, so nothing failed for the person
+# who already knew the right values and everything failed for anyone else. Check
+# against `extract.cli config` and the endpoint's /v1/models before changing them.
+base_url = "https://ai.ramonecung.com/v1"
+model = "qwen/qwen3-vl-8b"
 api_key = "${DI_OPENAI_API_KEY}"
 max_tokens = 8000
 timeout = 600

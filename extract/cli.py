@@ -232,7 +232,41 @@ def show_config(args):
             except Exception as error:
                 print(f"  ERROR: {error}")
         print()
+    if args.check:
+        return _check_endpoint(config)
     return 0
+
+
+def _check_endpoint(config) -> int:
+    """Ask the endpoint whether it actually serves the model the manifest names.
+
+    Nothing offline can catch this. The manifest pinned a model the server had never
+    heard of and a base_url pointing at a workstation, and it went unnoticed for a
+    fortnight because every run overrode both from the environment -- so it worked
+    perfectly for the one person who already knew the right values, and failed on the
+    first document for everyone else. That is the failure mode a committed manifest
+    exists to prevent, so it is worth one round trip to confirm.
+    """
+    plugin = config.chosen("extractor") or "openai"
+    try:
+        backend = backends.build(config=config, plugin=plugin)
+    except Exception as error:
+        print(f"  cannot build {plugin}: {error}")
+        return 1
+    wanted = getattr(backend, "model", "")
+    print(f"--- checking {plugin} against the endpoint")
+    available = backend.available_models()
+    if not available:
+        print("  endpoint unreachable, or it lists no models. Nothing to check against.")
+        return 1
+    if wanted in available:
+        print(f"  ok: {wanted} is served ({len(available)} models available)")
+        return 0
+    print(f"  MISSING: the manifest asks for {wanted!r}, which this endpoint does not serve.")
+    close = [m for m in available if wanted.split("/")[-1][:6].lower() in m.lower()]
+    for name in (close or available)[:8]:
+        print(f"    available: {name}")
+    return 1
 
 
 def show_rules(args):
@@ -291,6 +325,8 @@ def main(argv=None):
 
     conf = sub.add_parser("config", help="show the resolved manifest and every setting")
     conf.add_argument("--config", default="")
+    conf.add_argument("--check", action="store_true",
+                      help="also ask the endpoint whether it serves the named model")
 
     rl = sub.add_parser("rules", help="show the post-extraction rules and their scope")
     rl.add_argument("--config", default="")
