@@ -56,6 +56,40 @@ profiles, correction memory, learned validation rules, and threshold calibration
 a versioned directory you can read, diff and ship — not model weights. Which also means
 the correction store *is* a fine-tuning dataset, generated as a by-product of normal use.
 
+## Phases
+
+Ordered by risk rather than by feature, and each one ends with a number rather than a
+demo. The question a phase answers is one that could kill the project, so the point of
+finishing it is knowing whether to continue.
+
+| phase | the risk it retires | ends with | state |
+|---|---|---|---|
+| **0** | Can any of this be measured? Corpus plus scoring harness, anchored by a self-test that must score exactly `1.000` and an empty-extractor baseline. | a scorer worth trusting | done |
+| **1** | Can a model read fields off a document it has never seen? Text layer only, type given, one call, no tools, no repair. | a field-accuracy number | done — `0.973` |
+| **2** | Can it read documents that are not clean? The normalizer becomes its own stage: degraded scans carry no text layer, so this is where OCR or a vision path has to earn its place. | degraded accuracy against clean | next |
+| **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | |
+| **4** | Can it tell when it is wrong? Validators: arithmetic that must foot, dates that must parse, cross-field constraints that must hold. | defect precision and recall | |
+| **5** | Is its confidence real? Calibration from independent signals rather than model self-report, and routing what fails to a person. | a calibration curve | |
+| **6** | Can it repair itself? The bounded repair loop and tool-using extraction — the agentic pockets, arriving last because everything before them is what makes them measurable. | repair success rate | |
+| **7** | Does teaching it work? Teach mode and the run queue as one screen, with the knowledge pack accumulating corrections, layout profiles and learned validators. | a learning curve | |
+
+Two consequences of this order are visible in the code and worth naming.
+
+Phase 1 deliberately refuses to classify. The document type comes from the corpus,
+because mixing extraction and classification would make a bad number impossible to
+attribute to either. The same reasoning keeps OCR out until Phase 2: documents with no
+text layer come back empty and are reported as skipped rather than scored, so the size
+of the gap OCR has to close is a measurement instead of an assumption.
+
+And the phases are not independent. Everything after Phase 1 measures itself against
+extraction output, which is why so much of Phase 1 went into the harness rather than
+the model. A validator cannot tell you whether the rule or the extractor is wrong. A
+confidence score cannot be calibrated against a systematically biased signal. Worst of
+all, a learning loop built on a broken extraction contract still appears to learn: the
+knowledge pack fills with thousands of corrections that all encode one schema defect,
+accuracy climbs, and the system is being taught to compensate for a bug rather than to
+read documents.
+
 ## Repo layout
 
 ```
