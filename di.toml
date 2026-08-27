@@ -13,6 +13,7 @@
 # points on photographs. The cascade's whole argument was cost, and the cost was not
 # real -- 3.6s a document against docTR's 4.0s, on a stage that is cached and paid once,
 # against 7.4 hours of extraction. See the README.
+splitter = "every_page"
 normalizer = "doctr"
 extractor = "openai"
 
@@ -25,6 +26,23 @@ extractor = "openai"
 # It also reads no text at all, so this stage runs before the normalizer and costs a
 # page render rather than an OCR pass.
 classifier = "cascade"
+
+# ------------------------------------------------------------------ splitters
+# Measured on 120 bundles holding 333 documents. The classifier-per-page splitter,
+# which cuts where the predicted type changes, lost to cutting everywhere:
+#
+#   every_page   F1 0.938   files exactly right 0.783   merged  0   over-cut 28
+#   by_type      F1 0.772   files exactly right 0.458   merged 62   over-cut 27
+#
+# 92% of documents in this corpus are a single page, so cutting everywhere is wrong 28
+# times, while by_type misses 62 joins where one document follows another of its own
+# type -- a change-of-type signal cannot see those, and half the joins here are of that
+# shape. It loses on the more expensive axis too: a merge hands the extractor two
+# unrelated documents and produces a record for a document that never existed, and
+# every_page makes none.
+#
+# by_type stays selectable. It is the right shape wherever multi-page documents are
+# common, which this corpus is not, and it is what produced the comparison above.
 
 # ------------------------------------------------------------------ classifiers
 

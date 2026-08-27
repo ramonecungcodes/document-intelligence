@@ -67,7 +67,7 @@ finishing it is knowing whether to continue.
 | **0** | Can any of this be measured? Corpus plus scoring harness, anchored by a self-test that must score exactly `1.000` and an empty-extractor baseline. | a scorer worth trusting | done |
 | **1** | Can a model read fields off a document it has never seen? Text layer only, type given, one call, no tools, no repair. | a field-accuracy number | done |
 | **2** | Can it read documents that are not clean? The normalizer becomes its own stage: degraded scans carry no text layer, so this is where OCR or a vision path has to earn its place. | degraded accuracy against clean | done |
-| **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | classifier done and wired into extraction; splitter has no corpus |
+| **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | done |
 | **4** | Can it tell when it is wrong? Validators: arithmetic that must foot, dates that must parse, cross-field constraints that must hold. | defect precision and recall | |
 | **5** | Is its confidence real? Calibration from independent signals rather than model self-report, and routing what fails to a person. | a calibration curve | |
 | **6** | Can it repair itself? The bounded repair loop and tool-using extraction — the agentic pockets, arriving last because everything before them is what makes them measurable. | repair success rate | |
@@ -96,6 +96,7 @@ read documents.
 core/                       shared domain code: field normalisation, type registry
 normalize/                  the OCR stage: native text, tesseract, docTR, cascade
 classify/                   the classifier stage: keyword baseline, llm, layout, dit, cascade
+split/                      the splitter stage: single, every_page, by_type
 extract/                    the extractor: document text -> schema-constrained fields
 eval/                       scoring, the report format, the CLI
 tests/                      unit tests, fixtured off the committed samples
@@ -423,12 +424,35 @@ abstention as a document whose every field came back empty would give it a zero 
 make declining look identical to failing, which is the reverse of the truth. Coverage
 is reported beside accuracy, and the declined files are listed in the run sidecar.
 
-### What this phase did not close
+### Splitting: the free option won
 
-The **splitter has no corpus**. Zero multi-document files exist, so the risk that a
-scanned batch holds three documents in one PDF is untested — it needs generator work
-before it can be measured, and claiming it works on the strength of the classifier
-would be exactly the unattributable number this project exists to avoid.
+A scanned batch does not arrive as one document per file, so the generator now builds
+bundles — several documents concatenated, with the page each one starts on recorded.
+120 bundles, 333 documents, 361 pages, and **half the joins are same-type on purpose**,
+because one invoice following another is the join a change-of-type splitter cannot see.
+
+| splitter | F1 | files exactly right | merged | over-cut |
+|---|---|---|---|---|
+| `single` — the file is one document | — | `0.108` | 213 | 0 |
+| **`every_page`** — each page is a document | **`0.938`** | **`0.783`** | **0** | 28 |
+| `by_type` — classify each page, cut on change | `0.772` | `0.458` | 62 | 27 |
+
+The classifier-per-page splitter lost to cutting everywhere, and it is the Phase 2
+cascade result again: the clever option beaten by the free one, visible only because
+the baselines were reported beside it.
+
+92% of the documents here are a single page, so cutting everywhere is wrong 28 times,
+while `by_type` misses 62 same-type joins — `0.487` recall on exactly the joins it was
+predicted to be blind to.
+
+It also loses on the more expensive axis. A **merge** hands the extractor two unrelated
+documents and produces a record for a document that never existed; an **over-cut** shows
+up as missing fields, which is visible. `every_page` makes no merges at all.
+
+`by_type` stays in the codebase. It is the right shape wherever multi-page documents
+are common — which this corpus is not — and running it is what produced the comparison.
+
+### What this phase did not close
 
 **Two form variants are still confused**, one document each: `loan` read as
 `onboarding`, and `w4` read as `w9`. The keyword arbiter has no notion of variants, so
