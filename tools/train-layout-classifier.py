@@ -74,11 +74,38 @@ LABELS = list(_labels())
 PROFILES = ("light", "photo", "fax")
 
 
-def held_out(repo: str) -> set:
-    """The source documents behind the 75-document stratified sample."""
-    path = os.path.join(repo, "data", "sample75.txt")
-    with open(path, encoding="utf-8") as handle:
-        return {line.strip().split("__")[0] for line in handle if line.strip()}
+def held_out(repo: str, per_label: int, seed: int) -> set:
+    """An equal number of source documents reserved per label.
+
+    The old held-out set was a stratified sample built for a different purpose, and it
+    was stratified by document *type* rather than by label: it reserved 32 resumes and
+    four of each form variant. A test set that is 28% one class makes the headline
+    number a statement about that class.
+
+    Chosen by source document, because every document exists four times -- clean,
+    light, photo, fax -- and reserving a document's fax version while training on its
+    light version would measure memorisation of that document rather than of its type.
+    """
+    from collections import defaultdict
+    grouped = defaultdict(list)
+    for folder, base in TYPE_OF.items():
+        clean_dir = os.path.join(repo, "data", folder)
+        if not os.path.isdir(clean_dir):
+            continue
+        variants = variant_index(repo)
+        for name in sorted(os.listdir(clean_dir)):
+            if not name.endswith(".pdf"):
+                continue
+            source = f"{folder}/{name[:-4]}"
+            variant = variants.get(source, "")
+            grouped[f"{base}:{variant}" if variant else base].append(source)
+    rng = random.Random(seed)
+    chosen = set()
+    for label in sorted(grouped):
+        pool = sorted(grouped[label])
+        rng.shuffle(pool)
+        chosen.update(pool[:per_label])
+    return chosen
 
 
 def layouts(repo: str):
@@ -215,6 +242,43 @@ def build_features(items, native, repo: str, require_words: bool = True):
     return built
 
 
+def balance(items, seed: int):
+    """Cap every label to the rarest, so the test set cannot be read as one class.
+
+    Reserving a page design takes a third of the forms and a tenth of the invoices,
+    because forms have three designs and invoices have ten. Left alone that hands back
+    a test set which is 74% forms, where a model that answered `form` every time would
+    score 0.74 and the headline number would say almost nothing about the other four
+    types.
+
+    Capping is deterministic and it is announced. A silently truncated evaluation set
+    reads as full coverage, which is the failure this whole project is arranged to
+    avoid.
+    """
+    from collections import defaultdict
+    grouped = defaultdict(list)
+    for item in items:
+        # Keyed on label *and* profile. Capping on the label alone could keep four
+        # faxes for one class and four clean pages for another, and the per-profile
+        # table -- the one that says whether degradation is handled -- would be
+        # comparing different classes at each row.
+        grouped[(item["label"], item["profile"])].append(item)
+    if not grouped:
+        return items
+    cap = min(len(v) for v in grouped.values())
+    kept, dropped = [], 0
+    rng = random.Random(seed)
+    for label in sorted(grouped):
+        pool = sorted(grouped[label], key=lambda i: i["path"])
+        rng.shuffle(pool)
+        kept += pool[:cap]
+        dropped += len(pool) - cap
+    if dropped:
+        print(f"  test set balanced to {cap} per label and profile "
+              f"({len(kept)} kept, {dropped} dropped so no class dominates)")
+    return kept
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="train-layout-classifier")
     parser.add_argument("--repo", default=".")
@@ -228,6 +292,10 @@ def main(argv=None) -> int:
     parser.add_argument("--limit", type=int, default=0, help="smoke test on a subset")
     parser.add_argument("--balance", action="store_true",
                         help="weight the loss by inverse class frequency")
+    parser.add_argument("--test-per-label", type=int, default=4,
+                        help="source documents reserved per label (holdout=source)")
+    parser.add_argument("--unbalanced-test", action="store_true",
+                        help="do not cap the test set to equal counts per label")
     parser.add_argument("--holdout", default="source", choices=("source", "template"),
                         help="source: unseen documents. template: unseen page designs")
     parser.add_argument("--arch", default="layout", choices=("layout", "image"),
@@ -245,7 +313,7 @@ def main(argv=None) -> int:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     repo = os.path.abspath(args.repo)
-    test_sources = held_out(repo)
+    test_sources = held_out(repo, args.test_per_label, args.seed)
     items, missing, native = catalogue(repo, require_ocr=args.arch != "image")
     if missing:
         print(f"note: {missing} degraded documents have no docTR text yet; skipped")
@@ -270,6 +338,11 @@ def main(argv=None) -> int:
 
     train_items = [i for i in items if not is_test(i)]
     test_items = [i for i in items if is_test(i)]
+    if not args.unbalanced_test:
+        # Dropped documents go nowhere. They cannot join training -- they are drawn
+        # from a reserved design, and putting them back would dissolve the holdout
+        # this split exists to create.
+        test_items = balance(test_items, args.seed)
     if args.limit:
         random.shuffle(train_items)
         train_items = train_items[:args.limit]
