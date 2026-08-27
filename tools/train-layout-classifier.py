@@ -99,12 +99,35 @@ def held_out(repo: str, per_label: int, seed: int) -> set:
             source = f"{folder}/{name[:-4]}"
             variant = variants.get(source, "")
             grouped[f"{base}:{variant}" if variant else base].append(source)
+    # Spread across page designs, not drawn blind. Taking four invoices at random from
+    # ten designs lands on three distinct ones and tests a duplicate instead of a
+    # design -- the variety is in the corpus and the test set should see it. Round-robin
+    # over designs first, then over documents within a design.
+    by_design = defaultdict(lambda: defaultdict(list))
+    designs = layouts(repo)
+    for label, sources in grouped.items():
+        for source in sources:
+            by_design[label][designs.get(source, "")].append(source)
+
     rng = random.Random(seed)
     chosen = set()
     for label in sorted(grouped):
-        pool = sorted(grouped[label])
-        rng.shuffle(pool)
-        chosen.update(pool[:per_label])
+        buckets = []
+        # Design order is shuffled as well as document order. Walking them in sorted
+        # order would hold out designs 0-3 of every type on every run and leave 4-9
+        # never evaluated -- distinct, but always the same quarter of the space.
+        for design in sorted(by_design[label]):
+            pool = sorted(by_design[label][design])
+            rng.shuffle(pool)
+            buckets.append(pool)
+        rng.shuffle(buckets)
+        picked, depth = [], 0
+        while len(picked) < per_label and any(len(b) > depth for b in buckets):
+            for bucket in buckets:
+                if len(bucket) > depth and len(picked) < per_label:
+                    picked.append(bucket[depth])
+            depth += 1
+        chosen.update(picked)
     return chosen
 
 
