@@ -194,7 +194,30 @@ def run(args):
     # An hour of extraction should not be one crash away from nothing, and a partial
     # file is scoreable -- the scorer already reports what it could not match.
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
+    # --resume keeps the successes of an interrupted run and redoes the rest. The
+    # watchdog pattern depends on this: a run that stalls is killed and relaunched,
+    # and without resume every relaunch starts from document one -- which turns one
+    # hung request into a run that can never finish. Failures are retried on purpose;
+    # a connection error at 2am should not be a permanent verdict.
+    already = {}
+    if args.resume and os.path.exists(out_path):
+        with open(out_path, encoding="utf-8") as previous:
+            for line in previous:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue        # the line a kill interrupted mid-write
+                if not record.get("_error"):
+                    already[record["file"]] = record
+    if already:
+        jobs = [job for job in jobs if job[1] not in already]
+        print(f"  resume: keeping {len(already)} finished, {len(jobs)} to go")
+
     stream = open(out_path, "w", encoding="utf-8", newline="\n")
+    for record in already.values():
+        stream.write(json.dumps(record) + "\n")
+    stream.flush()
 
     aborted = ""
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
@@ -414,6 +437,8 @@ def main(argv=None):
                     help="stop the run if any single document takes longer than this")
     go.add_argument("--no-think", action="store_true",
                     help="disable chain-of-thought (overrides DI_NO_THINK)")
+    go.add_argument("--resume", action="store_true",
+                    help="keep successes already in --out; redo failures and the rest")
     go.add_argument("--dry-run", action="store_true", help="list the work, call nothing")
 
     show = sub.add_parser("schema", help="print the schema and prompt for a type")
