@@ -67,7 +67,7 @@ finishing it is knowing whether to continue.
 | **0** | Can any of this be measured? Corpus plus scoring harness, anchored by a self-test that must score exactly `1.000` and an empty-extractor baseline. | a scorer worth trusting | done |
 | **1** | Can a model read fields off a document it has never seen? Text layer only, type given, one call, no tools, no repair. | a field-accuracy number | done |
 | **2** | Can it read documents that are not clean? The normalizer becomes its own stage: degraded scans carry no text layer, so this is where OCR or a vision path has to earn its place. | degraded accuracy against clean | done |
-| **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | classifier done; splitter blocked |
+| **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | classifier done and wired into extraction; splitter has no corpus |
 | **4** | Can it tell when it is wrong? Validators: arithmetic that must foot, dates that must parse, cross-field constraints that must hold. | defect precision and recall | |
 | **5** | Is its confidence real? Calibration from independent signals rather than model self-report, and routing what fails to a person. | a calibration curve | |
 | **6** | Can it repair itself? The bounded repair loop and tool-using extraction — the agentic pockets, arriving last because everything before them is what makes them measurable. | repair success rate | |
@@ -95,7 +95,7 @@ read documents.
 ```
 core/                       shared domain code: field normalisation, type registry
 normalize/                  the OCR stage: native text, tesseract, docTR, cascade
-classify/                   the classifier stage: keyword baseline, llm, layout, dit
+classify/                   the classifier stage: keyword baseline, llm, layout, dit, cascade
 extract/                    the extractor: document text -> schema-constrained fields
 eval/                       scoring, the report format, the CLI
 tests/                      unit tests, fixtured off the committed samples
@@ -311,20 +311,79 @@ mixing extraction and classification would have made a bad number impossible to
 attribute to either — but it is not how the system ever runs. A folder of scanned
 paperwork does not come labelled.
 
-Five types, so the floor is not zero. Always answering the commonest type scores
-`0.200` on a balanced sample having read nothing, and every result below is reported
-against that.
+**Nine answers, not five.** `form` carries five variants whose field sets differ by
+more than a name — onboarding asks for 22 fields, w4 for 9 — and the extractor selects
+between them. A classifier that stops at `form` has answered half the question and left
+the rest to the corpus, which is the hand-over this phase exists to remove. The label
+set is generated from the type registry, so the classifier and the extractor cannot
+disagree about what the possible answers are.
 
-| classifier | reads | clean | fax |
+So the floor is `0.111`: nine balanced classes, always guessing one of them, having
+read nothing. Every number below is reported against that.
+
+### What a corpus rebuild cost, and why it was worth it
+
+An earlier version of this section reported `0.958` on faxes and concluded that the
+page image alone beat every model that also read the words. That result did not
+survive its own corpus.
+
+At the time, invoices and purchase orders had three page designs and two. Holding out
+a *document* could not distinguish a model that had learned what an invoice is from one
+that had memorised what this corpus's invoices look like — and the image model was
+doing the second. Rebuilding the corpus with ten designs each and holding out a whole
+*design* took the memorisation away:
+
+| held out by | overall | fax | purchase orders |
 |---|---|---|---|
-| keyword | printed phrases | `0.700` | — |
-| llm | OCR text | `0.990` | `0.571` |
-| LayoutLMv3 | words + boxes + image | `1.000` | `0.943` |
-| **dit** | **the page image alone** | **`1.000`** | **`0.958`** |
+| source document | `0.958` | `0.917` | `0.938` |
+| **page design** | **`0.792`** | **`0.694`** | **`0.125`** |
 
-The keyword baseline is a floor, not a candidate: its phrases are drawn from what the
-generator prints, which real vendors would not oblige it by repeating. It reaches
-`0.350` on multi-bill invoices, which say "Invoice" exactly as loudly as invoices do.
+Fourteen of sixteen purchase orders read as invoices. Not a data shortage — nine PO
+designs were still in training — but a distinction the model never had to learn. An
+invoice and a purchase order are both a header, a ruled line-item table and a totals
+block; what separates them is a phrase printed at the top of the page. With two or
+three templates per type, memorising each template stood in for the concept and looked
+exactly like understanding.
+
+### The pipeline: read the page, ask about the words only where it matters
+
+Two models fail in different places rather than one being better. The image model is
+right about almost everything except that one pair; a model given the words resolves
+it outright. So the image model runs first and the text is consulted only where it is
+known to be needed.
+
+| unseen page designs, clean | image alone | cascade |
+|---|---|---|
+| purchase_order → invoice | 4 | **0** |
+| invoice → purchase_order | 2 | **0** |
+| **overall** | **`0.778`** | **`0.944`** |
+
+The order is the whole economy of it. The image model reads no text, so it costs a page
+render; the text path costs an OCR pass — hours over a thousand degraded documents.
+Escalating spends that on the 22% of documents that need it rather than all of them.
+
+The trigger is measured rather than chosen conservatively. The confusable-pair trigger
+alone scores `0.944` and escalates 22%; adding a `0.90` confidence floor escalates 56%
+and scores exactly `0.944`. Every extra escalation was a document the image model was
+going to get right anyway, and each one is an OCR pass.
+
+The keyword baseline is the secondary, and it is worth being clear about why that is
+not a contradiction of calling it a floor elsewhere. It scores `0.700` overall and
+`0.350` on multi-bill invoices, so it is no one's classifier. But asked a single
+question — is this page an invoice or a purchase order, given that something else has
+already narrowed it to those two — it is exact and free. A weak classifier can be a
+strong arbiter.
+
+### What the multi-bill invoice cost, and stopped costing
+
+Multi-bill against plain invoice dominated Phase 1 and held the keyword baseline to
+`0.350`. Across every run above it is now **zero confusions in either direction**. It
+differs from an invoice by carrying a repeated per-service block, and a model reading
+the page as a picture sees that structure instead of inferring it from vocabulary.
+
+The confusion that replaced it was invoice against purchase order — invisible while
+each type had two or three templates, and the worst class in the system once they had
+ten.
 
 ### The fax gap is not comprehension
 
@@ -346,51 +405,23 @@ nearest-neighboured against the clean corpus:
 A fax keeps two-thirds of its words and three-quarters of its layout, and position
 alone identifies the type better than the LLM reading the text does.
 
-### Dropping the text made it better
+### Abstention, and where it belongs now
 
-The result worth keeping is that **the image-only model beats the multimodal one**.
-LayoutLMv3 gets the words, the word boxes *and* the page; DiT gets only the page; DiT
-wins on every profile and trains in a fifth of the time.
+Every error the image model made on unseen-design faxes arrived below `0.90`
+confidence, and the documents it declined were the ones there was least to read on — a
+mean of 43 OCR words against 92.5 on the ones it answered. It abstains where the page
+has gone blank, which is the typed-decision discipline Phase 1 applied to fields,
+arriving one stage earlier.
 
-That is not an argument against fusion in general — LayoutLMv3 *is* fusion, learned and
-early, which is strictly more expressive than averaging two models' probabilities. It is
-an argument about *these* documents. The failure modes are correlated: DiT's unsure
-documents carry a mean of 43 OCR words against 92.5 for its confident ones, so a text
-branch goes blind exactly where the image branch needs help. Fusion pays when errors are
-independent, and degradation takes out both at once.
+The cascade changes where that floor sits rather than whether it exists. A document
+whose top two answers are the confusable pair is no longer a candidate for abstention —
+it is a candidate for a second opinion, and the second opinion is exact. Abstention is
+for pages nobody can read, not for questions that are merely narrow.
 
-### Held out by page design, not by document
-
-A perfect score on a generated corpus is a reason for suspicion. Every document of a
-type is drawn from a handful of designs, so holding out *documents* cannot separate a
-model that learned what an invoice is from one that memorised what this corpus's
-invoices look like. Measured directly: DiT scores `1.000` on faxes held out by document
-and `0.958` held out by page design. The gap is what it had memorised.
-
-The numbers above are the design-holdout ones. Every document exists four times — clean,
-light, photo, fax — so the split is by source document too; training on a document's
-light version while testing its fax version would measure memorisation of that document.
-
-### Confidence does the routing
-
-`0.958` is not the number the pipeline runs on. Every error DiT made on unseen-design
-faxes arrived below `0.90` confidence, so that is where `di.toml` sets the floor:
-
-| profile | coverage at 0.90 | accuracy when it answers |
-|---|---|---|
-| clean | 100% | `1.000` |
-| light | 100% | `1.000` |
-| photo | 98.6% | `1.000` |
-| fax | 88.7% | `1.000` |
-
-One threshold, no errors anywhere it commits, and it costs essentially nothing on the
-profiles that were already solved. The documents it declines are the ones there was
-least to read on — the 43-against-92.5 word gap above is the same split. It abstains
-where the page has gone blank, which is the typed-decision discipline Phase 1 applied
-to fields, arriving one stage earlier.
-
-And because DiT reads no text, this stage runs *before* the normalizer: classification
-costs a page render rather than an OCR pass over the corpus.
+A document the pipeline declines is **not extracted and not graded**. Scoring an
+abstention as a document whose every field came back empty would give it a zero and
+make declining look identical to failing, which is the reverse of the truth. Coverage
+is reported beside accuracy, and the declined files are listed in the run sidecar.
 
 ### What this phase did not close
 
@@ -399,13 +430,16 @@ scanned batch holds three documents in one PDF is untested — it needs generato
 before it can be measured, and claiming it works on the strength of the classifier
 would be exactly the unattributable number this project exists to avoid.
 
-Extraction still receives the *true* type. Wiring the predicted type through and
-measuring what classification costs downstream is the remaining piece.
+**Two form variants are still confused**, one document each: `loan` read as
+`onboarding`, and `w4` read as `w9`. The keyword arbiter has no notion of variants, so
+it cannot settle those the way it settles invoice against purchase order. They are the
+next thing worth fixing and they are not what blocks anything.
 
-These figures also predate the ten-design generator: invoices and purchase orders
-carried three and two designs when they were measured, and the design holdout could not
-be applied to those two types at all. Regenerating is what turns that from an untested
-assumption into a number.
+**The models have not been compared across all four profiles on the rebuilt corpus.**
+The one architecture comparison that has been run since the rebuild used clean
+documents only — 36 of them, four per class — which establishes the mechanism and ranks
+nothing. Whether a words-and-boxes model holds up on faxes, where docTR loses 38% of
+the words, is the open question.
 
 ## Why the corpus comes first
 
