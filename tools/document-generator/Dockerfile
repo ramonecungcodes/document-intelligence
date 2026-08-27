@@ -30,7 +30,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY generate.py render_pdfs.py degrade.py cli.py ./
+COPY generate.py templates.py render_pdfs.py degrade.py cli.py ./
 
 # augraphy writes a texture cache next to the working directory; keep it off the
 # mounted volume so it never lands in the dataset.
