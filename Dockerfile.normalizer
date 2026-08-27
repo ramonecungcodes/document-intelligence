@@ -1,0 +1,52 @@
+# di-normalizer -- OCR engines, kept out of the application image.
+#
+# Tesseract needs an apt package; docTR needs PyTorch. Together they are several
+# gigabytes that the extractor, the scorer and the web app have no use for, so they
+# live here rather than bloating di-app for every service that shares it. Same
+# reasoning that keeps Chromium and augraphy in the generator image.
+#
+# This is not a workaround for the plugin seam -- it is what the seam buys. Normalizing
+# is a separate stage that writes text to disk; everything downstream reads that text
+# through the `cached` normalizer and never needs an OCR dependency at all.
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app \
+    DI_DATASET_ROOT=/data \
+    DI_NORMALIZED_DIR=/data/normalized \
+    # docTR checks for TensorFlow first and warns loudly when it is absent; this says
+    # "torch, deliberately" rather than leaving a scary message in every run's output.
+    USE_TORCH=1 \
+    # Model weights download once and are baked in below, so a run needs no network.
+    DOCTR_CACHE_DIR=/opt/doctr
+
+RUN apt-get update && apt-get install --no-install-recommends -y \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements-normalizer.txt .
+# CPU-only torch. The GPU build is ~2 GB larger and this box's GPU is busy serving a
+# model; OCR here is a batch job that can afford to be slower.
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu \
+        -r requirements-normalizer.txt
+
+# Fetch the detection and recognition weights at build time. Downloading them on first
+# use would make the first document of a run mysteriously slow, and would make the
+# image unusable anywhere without internet access.
+RUN python -c "from doctr.models import ocr_predictor; ocr_predictor(pretrained=True)" \
+    || echo "WARNING: docTR weights not pre-fetched; first run will download them"
+
+COPY di.toml ./
+COPY core/ ./core/
+COPY normalize/ ./normalize/
+COPY eval/ ./eval/
+COPY tests/ ./tests/
+
+ENTRYPOINT ["python", "-m", "normalize.cli"]
+CMD ["--help"]

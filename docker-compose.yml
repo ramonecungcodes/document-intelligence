@@ -35,7 +35,7 @@ services:
     profiles: ["tools"]
     entrypoint: ["python", "-m", "extract.cli"]
     volumes:
-      - ./data:/data:ro          # documents in
+      - ./data:/data:ro          # documents and normalized text in
       - ./reports:/reports       # predictions out
       - ./di.toml:/app/di.toml:ro   # edit the manifest without rebuilding
     environment:
@@ -51,6 +51,11 @@ services:
       # it is told to, and a variable set in the shell but missing from this list is
       # silently dropped -- which looks exactly like the override not working.
       DI_EXTRACTOR: ${DI_EXTRACTOR:-}
+      # Reading OCR text a normalizer run already produced. No OCR dependency needed:
+      # the `cached` normalizer reads JSON.
+      DI_NORMALIZER: ${DI_NORMALIZER:-}
+      DI_CACHED_ENGINE: ${DI_CACHED_ENGINE:-}
+      DI_CACHED_ROOT: ${DI_CACHED_ROOT:-}
       DI_OPENAI_MODEL: ${DI_OPENAI_MODEL:-}
       DI_OPENAI_BASE_URL: ${DI_OPENAI_BASE_URL:-}
       DI_OPENAI_MAX_TOKENS: ${DI_OPENAI_MAX_TOKENS:-}
@@ -65,6 +70,40 @@ services:
     # provides host.docker.internal already; this adds it on Linux too.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    restart: "no"
+
+  # OCR, in its own image. Tesseract's apt package and docTR's PyTorch are several
+  # gigabytes the application never needs, and normalization is a separate stage
+  # anyway: it writes text to disk, and the extractor reads that through the `cached`
+  # normalizer without any OCR dependency of its own.
+  normalizer:
+    build:
+      context: .
+      dockerfile: Dockerfile.normalizer
+    image: di-normalizer
+    container_name: di-normalizer
+    profiles: ["tools"]
+    volumes:
+      - ./data:/data                # documents in, normalized text out
+      - ./di.toml:/app/di.toml:ro
+    environment:
+      DI_DATASET_ROOT: /data
+      DI_NORMALIZED_DIR: /data/normalized
+      DI_CONFIG: /app/di.toml
+      # Per-plugin overrides, for a one-off run without editing the manifest. Compose
+      # forwards only what it is told to, so every setting an engine declares needs a
+      # line here -- a variable set in the shell but missing from this list is silently
+      # dropped, which looks exactly like the override not working.
+      DI_NORMALIZER: ${DI_NORMALIZER:-}
+      DI_TESSERACT_DPI: ${DI_TESSERACT_DPI:-}
+      DI_TESSERACT_LANG: ${DI_TESSERACT_LANG:-}
+      DI_TESSERACT_PSM: ${DI_TESSERACT_PSM:-}
+      DI_DOCTR_DPI: ${DI_DOCTR_DPI:-}
+      DI_DOCTR_DETECTOR: ${DI_DOCTR_DETECTOR:-}
+      DI_DOCTR_RECOGNIZER: ${DI_DOCTR_RECOGNIZER:-}
+      DI_CASCADE_ENGINES: ${DI_CASCADE_ENGINES:-}
+      DI_CASCADE_ESCALATE_BELOW: ${DI_CASCADE_ESCALATE_BELOW:-}
+      DI_CONSENSUS_ENGINES: ${DI_CONSENSUS_ENGINES:-}
     restart: "no"
 
   evaluator:

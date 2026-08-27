@@ -1,0 +1,7 @@
+# The normalizer image only. These are the OCR dependencies, kept out of
+# requirements.txt so di-app never pays for them.
+pymupdf>=1.24            # rasterising pages; shared with the app
+pillow>=10.0             # image handling between PyMuPDF and the engines
+pytesseract>=0.3.10      # the tesseract normalizer (needs the tesseract-ocr apt package)
+python-doctr[torch]>=0.8 # the doctr normalizer: detection + recognition models
+pytest>=8.0              # tests run in the container, as they do for di-app
