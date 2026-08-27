@@ -1,4 +1,13 @@
-"""Fine-tune a layout-aware classifier, and measure it against the text one.
+"""Fine-tune a document classifier that reads the page, and measure it against text.
+
+Two architectures, one harness:
+
+    --arch layout   LayoutLMv3 -- words, word boxes and the page image
+    --arch image    DiT -- the page image alone, no words and no boxes
+
+They share the split, the held-out set, the scorer and the report on purpose. The
+comparison between them is the point, and two scripts would eventually disagree about
+what they were comparing.
 
 Why this exists
 ---------------
@@ -34,6 +43,8 @@ Licensing
 `microsoft/layoutlmv3-base` is CC-BY-NC-SA 4.0: fine for a portfolio, not for a
 commercial deployment. `--checkpoint` exists so the model can be swapped; LiLT
 (`SCUT-DLVCLab/lilt-roberta-en-base`) is MIT and takes the same text-and-boxes input.
+Check `microsoft/dit-base`'s own terms before shipping it -- do not assume it inherits
+the MIT licence of the unilm repository it is published from.
 """
 from __future__ import annotations
 
@@ -61,6 +72,43 @@ def held_out(repo: str) -> set:
     path = os.path.join(repo, "data", "sample75.txt")
     with open(path, encoding="utf-8") as handle:
         return {line.strip().split("__")[0] for line in handle if line.strip()}
+
+
+def layouts(repo: str):
+    """file stem -> which visual template the generator drew it from.
+
+    The corpus is generated, so every document of a type shares one of a handful of
+    designs. Holding out documents cannot tell a model that has learned what an
+    invoice is from one that has memorised what this corpus's invoice template looks
+    like -- the held-out document is drawn from a template the model trained on.
+
+    Only forms, multi-bill invoices and resumes carry a `layout`. Invoices and purchase
+    orders have exactly one design each, so no split of this corpus can ask whether a
+    model generalises across invoice designs. That is a limit of the corpus and it is
+    reported rather than papered over.
+    """
+    import glob
+    found = {}
+    for path in glob.glob(os.path.join(repo, "data", "labels", "*.json")):
+        with open(path, encoding="utf-8") as handle:
+            records = json.load(handle)
+        records = records if isinstance(records, list) else (
+            records.get("documents") or records.get("records") or [])
+        for record in records:
+            if record.get("layout") is None or not record.get("file"):
+                continue
+            stem = record["file"].replace("\\", "/")
+            found[stem[:-4] if stem.endswith(".pdf") else stem] = str(record["layout"])
+    return found
+
+
+def unseen_templates(by_layout):
+    """Reserve the highest-numbered template of each type for the test set."""
+    from collections import defaultdict
+    grouped = defaultdict(set)
+    for stem, layout in by_layout.items():
+        grouped[stem.split("/")[0]].add(layout)
+    return {folder: max(seen) for folder, seen in grouped.items()}
 
 
 def catalogue(repo: str):
@@ -101,8 +149,15 @@ def catalogue(repo: str):
     return items, missing, native
 
 
-def build_features(items, native, repo: str):
-    """Words, boxes and a page image per document."""
+def build_features(items, native, repo: str, require_words: bool = True):
+    """Words, boxes and a page image per document.
+
+    `require_words` is False for the image-only architecture, and the distinction is
+    not cosmetic. A fax page docTR read three words from still has a perfectly good
+    picture, and dropping it would remove the hardest documents from the image model's
+    training *and* its test set -- handing it a flattering score against a model that
+    had to face them.
+    """
     built = []
     for index, item in enumerate(items, 1):
         if item["reader"] == "native":
@@ -111,9 +166,10 @@ def build_features(items, native, repo: str):
             words = store.read(os.path.join(repo, "data", "normalized"),
                                "doctr", item["words"]).words
         texts, boxes, image = features(item["path"], words)
-        if not texts:
-            # No readable words at all. Kept out rather than taught as an empty
-            # example of its class, which would teach that a blank page is that type.
+        if require_words and not texts:
+            # No readable words at all. Kept out of the text-and-boxes model rather
+            # than taught as an empty example of its class, which would teach it that
+            # a blank page is that type.
             continue
         built.append({**item, "texts": texts, "boxes": boxes, "image": image})
         if index % 200 == 0:
@@ -134,11 +190,17 @@ def main(argv=None) -> int:
     parser.add_argument("--limit", type=int, default=0, help="smoke test on a subset")
     parser.add_argument("--balance", action="store_true",
                         help="weight the loss by inverse class frequency")
+    parser.add_argument("--holdout", default="source", choices=("source", "template"),
+                        help="source: unseen documents. template: unseen page designs")
+    parser.add_argument("--arch", default="layout", choices=("layout", "image"),
+                        help="layout: words+boxes+image (LayoutLMv3). "
+                             "image: the page picture alone (DiT)")
     args = parser.parse_args(argv)
 
     import torch
     from torch.utils.data import DataLoader, Dataset
-    from transformers import AutoProcessor, AutoModelForSequenceClassification
+    from transformers import (AutoImageProcessor, AutoModelForImageClassification,
+                              AutoProcessor, AutoModelForSequenceClassification)
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -150,8 +212,26 @@ def main(argv=None) -> int:
     if missing:
         print(f"note: {missing} degraded documents have no docTR text yet; skipped")
 
-    train_items = [i for i in items if i["source"] not in test_sources]
-    test_items = [i for i in items if i["source"] in test_sources]
+    if args.holdout == "template":
+        by_layout = layouts(repo)
+        reserved = unseen_templates(by_layout)
+        print("  reserved templates: " + "  ".join(
+            f"{k}=layout {v}" for k, v in sorted(reserved.items())))
+        def is_test(item):
+            layout = by_layout.get(item["source"])
+            return layout is not None and reserved.get(
+                item["source"].split("/")[0]) == layout
+        untestable = sorted({i["source"].split("/")[0] for i in items
+                             if by_layout.get(i["source"]) is None})
+        if untestable:
+            print(f"  no template variation, so untestable this way: "
+                  f"{', '.join(untestable)}")
+    else:
+        def is_test(item):
+            return item["source"] in test_sources
+
+    train_items = [i for i in items if not is_test(i)]
+    test_items = [i for i in items if is_test(i)]
     if args.limit:
         random.shuffle(train_items)
         train_items = train_items[:args.limit]
@@ -159,21 +239,35 @@ def main(argv=None) -> int:
           f"({len(test_sources)} source documents) - device {device}")
 
     print("building features ...", flush=True)
-    train = build_features(train_items, native, repo)
-    test = build_features(test_items, native, repo)
+    needs_words = args.arch != "image"
+    train = build_features(train_items, native, repo, needs_words)
+    test = build_features(test_items, native, repo, needs_words)
     print(f"  {len(train)} train - {len(test)} test")
 
-    processor = AutoProcessor.from_pretrained(args.checkpoint, apply_ocr=False)
-    model = AutoModelForSequenceClassification.from_pretrained(
-        args.checkpoint, num_labels=len(LABELS),
-        id2label={i: l for i, l in enumerate(LABELS)},
-        label2id={l: i for i, l in enumerate(LABELS)}).to(device)
+    ids = {"id2label": {i: l for i, l in enumerate(LABELS)},
+           "label2id": {l: i for i, l in enumerate(LABELS)}}
+    if args.arch == "image":
+        # DiT sees the page and nothing else -- no words, no boxes. It is the honest
+        # test of how much the picture alone carries, which the multimodal model
+        # cannot answer because it always has the text to fall back on.
+        processor = AutoImageProcessor.from_pretrained(args.checkpoint)
+        model = AutoModelForImageClassification.from_pretrained(
+            args.checkpoint, num_labels=len(LABELS), **ids,
+            ignore_mismatched_sizes=True).to(device)
+    else:
+        processor = AutoProcessor.from_pretrained(args.checkpoint, apply_ocr=False)
+        model = AutoModelForSequenceClassification.from_pretrained(
+            args.checkpoint, num_labels=len(LABELS), **ids).to(device)
 
     def encode(batch):
-        encoded = processor(
-            [b["image"] for b in batch], [b["texts"] for b in batch],
-            boxes=[b["boxes"] for b in batch], truncation=True, padding=True,
-            max_length=512, return_tensors="pt")
+        if args.arch == "image":
+            encoded = processor([b["image"] for b in batch], return_tensors="pt")
+        else:
+            encoded = processor(
+                [b["image"] for b in batch], [b["texts"] for b in batch],
+                boxes=[b["boxes"] for b in batch], truncation=True, padding=True,
+                max_length=512, return_tensors="pt")
+        encoded = dict(encoded)
         encoded["labels"] = torch.tensor([LABELS.index(b["label"]) for b in batch])
         return {k: v.to(device) for k, v in encoded.items()}
 
@@ -269,7 +363,9 @@ def main(argv=None) -> int:
     report = os.path.join(repo, "reports", f"{os.path.basename(args.out)}.json")
     os.makedirs(os.path.dirname(report), exist_ok=True)
     with open(report, "w", encoding="utf-8", newline="\n") as handle:
-        json.dump({"checkpoint": args.checkpoint, "epochs": args.epochs,
+        json.dump({"checkpoint": args.checkpoint, "arch": args.arch,
+                   "holdout": args.holdout,
+                   "epochs": args.epochs, "balanced": args.balance,
                    "train": len(train), "documents": rows}, handle, indent=1)
 
     # Scored through the same code the LLM classifier is scored through, so the two

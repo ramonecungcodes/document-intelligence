@@ -24,7 +24,8 @@ from __future__ import annotations
 import os
 
 MAX_WORDS = 512          # the model's sequence limit; more would be truncated anyway
-IMAGE_SIZE = 224         # LayoutLMv3's patch grid
+IMAGE_SIZE = 224         # the patch grid both LayoutLMv3 and DiT expect
+RENDER_SCALE = 4         # rasterise this much larger, then downsample
 
 
 def _clamp(value: float, ceiling: int = 1000) -> int:
@@ -69,13 +70,19 @@ def page_one(path: str):
     try:
         page = document[0]
         rect = page.rect
-        # Rendered at the size the model wants rather than large-then-resized: the
-        # patch grid is 224 square and nothing is gained by rasterising a page at 300
-        # dpi to throw the detail away a moment later.
-        zoom = IMAGE_SIZE / max(rect.width, rect.height)
+        # Rasterised large and then downsampled, rather than rendered straight to 224.
+        # Going straight there point-samples a 170 dpi bitonal fax onto a grid coarser
+        # than its own strokes: rules and text rows drop out entirely depending on
+        # where the grid lands, and the page arrives looking cleaner and emptier than
+        # it is. Downsampling from 4x averages those strokes into grey instead, which
+        # is what tells an image model that a line was there at all.
+        zoom = (IMAGE_SIZE * RENDER_SCALE) / max(rect.width, rect.height)
         pixmap = page.get_pixmap(matrix=_matrix(zoom), alpha=False)
         image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
-        return rect.width, rect.height, image.resize((IMAGE_SIZE, IMAGE_SIZE))
+        # Squared deliberately: both models want a fixed square, and letterboxing
+        # would spend patches on blank margin that carries nothing.
+        return rect.width, rect.height, image.resize((IMAGE_SIZE, IMAGE_SIZE),
+                                                     Image.LANCZOS)
     finally:
         document.close()
 
