@@ -105,6 +105,29 @@ def _group_score(bucket: dict, group: Group) -> GroupScore:
     return bucket[group.name]
 
 
+def _copied_from_sibling(predicted: dict, name: str) -> bool:
+    """Is this value a verbatim copy of another field in the same record?
+
+    The signature of a model filling a required slot rather than reading a document.
+    Measured on the multi-bill sample, 15 of 16 invented service locations were exactly
+    a neighbouring field's value -- a cost centre, a meter number -- and the count did
+    not shift on a model four times larger. Distinguishing that from an ordinary wrong
+    answer is what tells you the fix belongs in the schema and not in the model.
+
+    Only compares against scalar siblings, and only when the value is non-trivial: two
+    fields both holding "0" or "N/A" is a coincidence, not contamination.
+    """
+    value = str(predicted.get(name, "")).strip().lower()
+    if len(value) < 4:
+        return False
+    for other, sibling in predicted.items():
+        if other == name or not isinstance(sibling, (str, int, float)):
+            continue
+        if str(sibling).strip().lower() == value:
+            return True
+    return False
+
+
 def score_fields(predicted: dict, truth: dict, specs, bucket: dict) -> None:
     for spec in specs:
         if spec.name not in truth:
@@ -113,7 +136,10 @@ def score_fields(predicted: dict, truth: dict, specs, bucket: dict) -> None:
             spec.kind, predicted.get(spec.name), truth.get(spec.name),
             tolerance=spec.tolerance, threshold=spec.threshold,
         )
-        _field_score(bucket, spec).add(result)
+        score = _field_score(bucket, spec)
+        score.add(result)
+        if result.note.startswith("predicted a value") and                 _copied_from_sibling(predicted, spec.name):
+            score.contaminated += 1
 
 
 def score_group(predicted: dict, truth: dict, group: Group, bucket: dict) -> None:
@@ -131,9 +157,20 @@ def score_group(predicted: dict, truth: dict, group: Group, bucket: dict) -> Non
             score_group(predicted_row, truth_row, nested, target.groups)
 
 
+def failed(predicted: dict) -> bool:
+    """A stub written by a failed extraction, not an answer to grade."""
+    return bool(predicted.get("_error"))
+
+
 def score_document(predicted: dict, truth: dict, spec: DocType, slice_score: SliceScore) -> None:
+    if failed(predicted):
+        slice_score.failed += 1
+        return
     slice_score.scored += 1
-    score_fields(predicted, truth, spec.fields, slice_score.fields)
+    # Variant types keep most of their fields on the variant, not the shared tuple --
+    # grading spec.fields alone would silently score a W-9 on one field.
+    score_fields(predicted, truth, spec.graded_fields(spec.variant_of(truth)),
+                 slice_score.fields)
     for group in spec.groups:
         score_group(predicted, truth, group, slice_score.groups)
 
@@ -211,7 +248,7 @@ def score(corpus_root: str, predictions: list, only=None, provenance=None) -> Sc
 
             if predicted is None:
                 unmatched += 1
-            else:
+            elif not failed(predicted):
                 detection_pairs.append((predicted, truth))
                 if "irregularities" in predicted:
                     any_detection_prediction = True
@@ -219,6 +256,12 @@ def score(corpus_root: str, predictions: list, only=None, provenance=None) -> Sc
     if unmatched:
         report.warnings.append(
             f"{unmatched} corpus documents had no matching prediction (joined on `file`)"
+        )
+    errored = sum(1 for record in by_file.values() if failed(record))
+    if errored:
+        report.warnings.append(
+            f"{errored} predictions were extraction failures and were not graded "
+            f"(they are counted as `failed`, not as wrong answers)"
         )
     extra = len(by_file) - (len(detection_pairs))
     if extra > 0:

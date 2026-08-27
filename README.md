@@ -56,10 +56,45 @@ profiles, correction memory, learned validation rules, and threshold calibration
 a versioned directory you can read, diff and ship — not model weights. Which also means
 the correction store *is* a fine-tuning dataset, generated as a by-product of normal use.
 
+## Phases
+
+Ordered by risk rather than by feature, and each one ends with a number rather than a
+demo. The question a phase answers is one that could kill the project, so the point of
+finishing it is knowing whether to continue.
+
+| phase | the risk it retires | ends with | state |
+|---|---|---|---|
+| **0** | Can any of this be measured? Corpus plus scoring harness, anchored by a self-test that must score exactly `1.000` and an empty-extractor baseline. | a scorer worth trusting | done |
+| **1** | Can a model read fields off a document it has never seen? Text layer only, type given, one call, no tools, no repair. | a field-accuracy number | done |
+| **2** | Can it read documents that are not clean? The normalizer becomes its own stage: degraded scans carry no text layer, so this is where OCR or a vision path has to earn its place. | degraded accuracy against clean | next |
+| **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | |
+| **4** | Can it tell when it is wrong? Validators: arithmetic that must foot, dates that must parse, cross-field constraints that must hold. | defect precision and recall | |
+| **5** | Is its confidence real? Calibration from independent signals rather than model self-report, and routing what fails to a person. | a calibration curve | |
+| **6** | Can it repair itself? The bounded repair loop and tool-using extraction — the agentic pockets, arriving last because everything before them is what makes them measurable. | repair success rate | |
+| **7** | Does teaching it work? Teach mode and the run queue as one screen, with the knowledge pack accumulating corrections, layout profiles and learned validators. | a learning curve | |
+
+Two consequences of this order are visible in the code and worth naming.
+
+Phase 1 deliberately refuses to classify. The document type comes from the corpus,
+because mixing extraction and classification would make a bad number impossible to
+attribute to either. The same reasoning keeps OCR out until Phase 2: documents with no
+text layer come back empty and are reported as skipped rather than scored, so the size
+of the gap OCR has to close is a measurement instead of an assumption.
+
+And the phases are not independent. Everything after Phase 1 measures itself against
+extraction output, which is why so much of Phase 1 went into the harness rather than
+the model. A validator cannot tell you whether the rule or the extractor is wrong. A
+confidence score cannot be calibrated against a systematically biased signal. Worst of
+all, a learning loop built on a broken extraction contract still appears to learn: the
+knowledge pack fills with thousands of corrections that all encode one schema defect,
+accuracy climbs, and the system is being taught to compensate for a bug rather than to
+read documents.
+
 ## Repo layout
 
 ```
 core/                       shared domain code: field normalisation, type registry
+extract/                    the extractor: PDF text -> schema-constrained fields
 eval/                       scoring, the report format, the CLI
 tests/                      unit tests, fixtured off the committed samples
 tools/document-generator/   synthetic evaluation corpus (Docker; see its README)
@@ -96,11 +131,12 @@ flattering themselves:
 docker compose run --rm --name di-document-generator document-generator build --degrade --levels light,medium,heavy,photo,fax
 ```
 
-Then score an extractor against it:
+Then extract and score:
 
 ```bash
-docker compose run --rm evaluator selftest
-docker compose run --rm evaluator score --predictions /reports/preds.jsonl
+export ANTHROPIC_API_KEY=...
+docker compose run --rm extractor run --only invoices --limit 20
+docker compose run --rm evaluator score --predictions /reports/predictions.jsonl
 ```
 
 Both services sit behind the `tools` profile, so `docker compose up` starts nothing.
@@ -127,8 +163,9 @@ Two baselines anchor the harness, and both are commands:
 That second one is more interesting than it sounds. It does not score zero: the
 defective corpus deliberately empties fields, and an extractor returning nothing
 "agrees" about those. So the report carries accuracy **excluding blank fields**
-alongside the raw number, and that is the honest one to quote — on the current corpus
-the empty extractor scores `0.007` raw and `0.000` non-blank.
+alongside the raw number, and that is the honest one to quote. Run it and see the gap
+for yourself: the raw figure sits meaningfully above zero, and that difference is the
+free credit any extractor would otherwise be quietly collecting.
 
 Everything is sliced by document type, layout and degradation profile rather than
 reported as one number, because a blended average hides exactly what you need to know:
@@ -141,6 +178,66 @@ Reports carry provenance and cost slots from version 1 even though nothing popul
 them yet. A report that cannot say which corpus, model and knowledge pack produced it
 is unattributable, and the calibration curve, the learning curve and the extractor
 ablation are all comparisons across those axes.
+
+## Extracting
+
+`extract/` is the current extractor and it is deliberately the crudest thing that can
+produce a number: read the PDF's text layer, send it once with a schema, keep what
+comes back. No tools, no repair loop, no confidence, no retries on content. Every
+later phase has to justify itself against whatever this scores.
+
+The schema is generated from `core/doctypes.py` — the same declaration the scorer
+grades against — so the extractor and the evaluator cannot drift into disagreeing
+about what an invoice is. Every field is nullable and required, which lets the model
+say "not on the document" without inventing a value or dropping the key. That matters
+more than it sounds: a W-9 carries an SSN or an EIN and never both, and the defective
+corpus empties fields on purpose.
+
+Two things it deliberately does not do:
+
+- **It does not classify.** The document type comes from the corpus. Phase 1 measures
+  whether a model can read fields off a layout it has never seen; classification is a
+  separate risk with its own phase, and mixing them would make a bad number impossible
+  to attribute.
+- **It does not correct the document.** The prompt tells the model to transcribe a
+  total even when it disagrees with the line items. Detecting that disagreement is the
+  validators' job, and an extractor that quietly fixes documents destroys the defect
+  detection signal.
+
+Scanned documents come back empty, because they have no text layer to read. That is
+not a bug to paper over — it is the measured size of the gap OCR has to close, and the
+reason normalisation becomes its own pipeline stage.
+
+Runs report what they cost:
+
+```
+  extracted 20/20
+  41,203 in / 8,914 out  ·  $0.43  ·  96s of model time
+```
+
+`python -m extract.cli schema --type multi_bill_invoice` prints the generated schema
+and system prompt without calling anything.
+
+## Results
+
+Numbers live in the write-up rather than here, deliberately. A README that quotes a
+score acquires a maintenance burden it will lose -- the figure goes stale the next time
+anything changes, and a stale number in the first file a reader opens is worse than no
+number at all.
+
+Reproduce them instead. The corpus is regenerable from its seed and every run writes a
+versioned report carrying the model, the manifest and the resolved settings that
+produced it:
+
+```bash
+docker compose run --rm document-generator build          # corpus, from seed 42
+docker compose run --rm extractor config --check          # confirm the endpoint serves the model
+docker compose run --rm extractor run --out mine.jsonl    # extract
+docker compose run --rm evaluator score --predictions /reports/mine.jsonl
+```
+
+`score --predictions self` must return exactly `1.000`, and `--predictions empty` gives
+the do-nothing baseline. Anything you measure sits between those two.
 
 ## Why the corpus comes first
 

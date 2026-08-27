@@ -1,0 +1,53 @@
+# DocumentIntelligence pipeline manifest.
+#
+# Which plugin fills each stage, and how each one is configured. Choosing a plugin and
+# configuring it happen in the same place, so there is nothing to hunt for afterwards.
+#
+# Committable by design: no secrets here, only ${VAR} references resolved from the
+# environment at load. Settings can also be overridden per plugin with a namespaced
+# variable -- DI_OPENAI_MODEL, DI_ANTHROPIC_EFFORT -- or by a command-line flag.
+
+[pipeline]
+extractor = "openai"
+
+# ------------------------------------------------------------------ extractors
+
+[extractors.openai]
+# Anything speaking OpenAI chat-completions: LM Studio, Ollama, vLLM, llama.cpp.
+# A named endpoint rather than host.docker.internal: it resolves the same from the
+# host, from a container, and from another machine on the tailnet.
+#
+# These two must name something the endpoint actually serves. They previously did not
+# -- the model was one no longer loaded and the base_url pointed at a workstation --
+# and every run overrode both from the environment, so nothing failed for the person
+# who already knew the right values and everything failed for anyone else. Check
+# against `extract.cli config` and the endpoint's /v1/models before changing them.
+base_url = "https://ai.ramonecung.com/v1"
+model = "qwen/qwen3-vl-8b"
+api_key = "${DI_OPENAI_API_KEY}"
+# Resumes are the long tail: a full work history plus skills runs past 26,000
+# characters of JSON, and at 8000 the model was still writing when the budget ran out
+# -- twelve of forty failed that way on the first full corpus run. Thinking tokens
+# come out of the same allowance, so the headroom has to cover both.
+max_tokens = 16000
+timeout = 600
+json_mode = "auto"
+no_think = false
+
+[extractors.anthropic]
+model = "claude-opus-5"
+effort = "high"
+max_tokens = 8000
+api_key = "${ANTHROPIC_API_KEY}"
+
+# ------------------------------------------------------------------ rules
+# Deterministic cleanup applied to every extraction. On by default -- a rule ships
+# because it is correct, so switching one off is the deliberate act. `extract.cli rules`
+# lists them with their scope.
+#
+# Only things true by definition belong here. A rule that corrects the model's
+# judgement makes the extractor look better and the evaluation meaningless.
+
+[rules]
+drop_rollup_rows = true
+drop_empty_rows = true

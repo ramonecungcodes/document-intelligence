@@ -35,6 +35,7 @@ class FieldScore:
     blank: int = 0        # truth was empty and the prediction agreed
     missing: int = 0      # truth had a value, prediction did not
     spurious: int = 0     # prediction had a value, truth did not
+    contaminated: int = 0  # spurious, and copied verbatim from a sibling field
     notes: Counter = field(default_factory=Counter)
 
     def add(self, comparison) -> None:
@@ -66,7 +67,47 @@ class FieldScore:
             "recovered_by_normalisation": self.match - self.exact,
             "missing": self.missing,
             "spurious": self.spurious,
+            **self.presence(),
             "notes": dict(self.notes.most_common(3)),
+        }
+
+    def presence(self) -> dict:
+        """Split one accuracy figure into the questions it silently averages.
+
+        A field like service_location scored 0.556, and that single number was adding
+        together three unrelated failures with opposite fixes and very different costs:
+        values invented where the document had none, values found but carrying their
+        printed label, and values simply missed. Worse, the biggest of those -- 16
+        fabricated addresses -- is invisible in an accuracy figure, because a fabricated
+        value and a missed one cost exactly the same one point.
+
+        They are not equally bad. A blank field is honest and gets looked at; a
+        confident wrong one flows downstream unchallenged. So the extraction question
+        ("what is the value?") is reported apart from the abstention question ("is there
+        a value at all?").
+
+        Every figure here derives from counters the scorer already kept.
+        """
+        absent = self.blank + self.spurious          # truth had nothing
+        present = self.n - absent                    # truth had something
+        found = present - self.missing               # we returned something for it
+        correct = self.match - self.blank            # ...and it was right
+        populated = found + self.spurious            # everything we populated
+        return {
+            # Can it tell whether the field exists at all? Getting this right means
+            # abstaining when absent and answering when present, value aside.
+            "presence_accuracy": _rate(self.blank + found, self.n),
+            # When it does populate the field, how often is that a real value?
+            "precision_populated": _rate(correct, populated),
+            # Of the values that were really there, how many came back right?
+            "recall_present": _rate(correct, present),
+            # The expensive error: invented a value where the document had none.
+            "false_positive_rate": _rate(self.spurious, absent),
+            # ...and how much of that was lifted verbatim from a neighbouring field,
+            # which is the signature of a model filling a slot rather than reading.
+            "contamination_rate": _rate(self.contaminated, absent),
+            "n_absent": absent,
+            "n_present": present,
         }
 
 
@@ -109,7 +150,8 @@ class SliceScore:
     name: str
     dimension: str = "doc_type"
     docs: int = 0
-    scored: int = 0        # documents a prediction was supplied for
+    scored: int = 0        # documents graded
+    failed: int = 0        # extraction errored; not graded, counted here instead
     fields: dict = field(default_factory=dict)
     groups: dict = field(default_factory=dict)
 
@@ -127,6 +169,7 @@ class SliceScore:
             "dimension": self.dimension,
             "documents": self.docs,
             "scored": self.scored,
+            "failed": self.failed,
             "field_accuracy": _rate(match, n),
             "field_accuracy_nonblank": _rate(match - blank, n - blank),
             "field_exact": _rate(exact, n),
@@ -193,6 +236,7 @@ class ScoreReport:
         return {
             "documents": sum(s.docs for s in by_type),
             "scored": sum(s.scored for s in by_type),
+            "failed": sum(s.failed for s in by_type),
             "fields_graded": n,
             "field_accuracy": _rate(match, n),
             "field_accuracy_nonblank": _rate(match - blank, n - blank),
