@@ -51,19 +51,26 @@ def run(args) -> int:
 
     # Text comes from the normalizer, so a classifier can be measured on degraded
     # documents without knowing OCR happened -- the same seam the extractor uses.
-    from normalize.base import NORMALIZERS, build as build_normalizer
-    chosen = (config.chosen("normalizer", args.normalizer) or "native").strip().lower()
-    declares = {s.name for s in NORMALIZERS.get(
-        chosen, type("x", (), {"SETTINGS": ()})).SETTINGS}
-    normalizer = build_normalizer(
-        config=config, plugin=args.normalizer,
-        overrides={"corpus": corpus_root} if "corpus" in declares else None)
+    #
+    # Unless it does not read text at all. An image classifier has no use for OCR, and
+    # OCR is the expensive stage: normalizing the degraded corpus takes hours, and
+    # paying for it to feed a plugin that ignores the result would make the cheap
+    # option look like the expensive one.
+    normalizer = None
+    if getattr(classifier, "NEEDS_TEXT", True):
+        from normalize.base import NORMALIZERS, build as build_normalizer
+        chosen = (config.chosen("normalizer", args.normalizer) or "native").strip().lower()
+        declares = {s.name for s in NORMALIZERS.get(
+            chosen, type("x", (), {"SETTINGS": ()})).SETTINGS}
+        normalizer = build_normalizer(
+            config=config, plugin=args.normalizer,
+            overrides={"corpus": corpus_root} if "corpus" in declares else None)
 
     jobs = documents(corpus_root, args.only, args.limit)
     if not jobs:
         raise SystemExit("nothing to classify")
-    print(f"{len(jobs)} documents · {classifier.describe()} · "
-          f"text from {normalizer.describe()}")
+    source = f"text from {normalizer.describe()}" if normalizer else "reads no text"
+    print(f"{len(jobs)} documents · {classifier.describe()} · {source}")
 
     score = ClassificationScore()
     rows = []
@@ -71,12 +78,12 @@ def run(args) -> int:
     def work(job):
         relative, truth = job
         path = os.path.join(corpus_root, relative)
-        document = normalizer.read(path)
+        document = normalizer.read(path) if normalizer else None
         # The whole `Extracted` and the path, not just the text. A layout-aware
         # classifier needs the word boxes and the page image; the text ones declare
         # **_ and ignore both, so nothing else had to change to allow it.
         return relative, truth, classifier.classify(
-            document.text, document=document, path=path)
+            document.text if document else "", document=document, path=path)
 
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
         futures = [pool.submit(work, job) for job in jobs]

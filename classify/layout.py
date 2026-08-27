@@ -28,7 +28,10 @@ import time
 from classify.base import Classification, register
 from core.plugins import Setting
 
-DEFAULT_MODEL = os.environ.get("DI_LAYOUT_MODEL", "models/layout-classifier")
+# The class-weighted checkpoint. The unweighted one answered `form` whenever it
+# was unsure -- 617 forms against 128 resumes in training -- and scored 0.821 on
+# fax against this one's 0.893.
+DEFAULT_MODEL = os.environ.get("DI_LAYOUT_MODEL", "models/layout-balanced")
 
 
 @register("layout")

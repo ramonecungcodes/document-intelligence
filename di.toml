@@ -16,6 +16,40 @@
 normalizer = "doctr"
 extractor = "openai"
 
+# The page image alone, no OCR. Measured on held-out documents drawn from page designs
+# training never saw, the three candidates went: LLM reading docTR text 0.571 on fax,
+# LayoutLMv3 on words+boxes+image 0.943, DiT on the image alone 0.958. Dropping the
+# text made it better -- on a 170 dpi fax docTR finds 62% of the words, so the text
+# branch is least reliable exactly where the image branch is working hardest.
+#
+# It also reads no text at all, so this stage runs before the normalizer and costs a
+# page render rather than an OCR pass.
+classifier = "dit"
+
+# ------------------------------------------------------------------ classifiers
+
+[classifiers.dit]
+model = "models/dit-balanced"
+# Every error this model made on unseen-design faxes arrived below 0.90, so this floor
+# answers 88.7% of them with none wrong and sends the rest to a person. It is set here
+# rather than defaulted in the plugin because it is the number that governs what the
+# pipeline does, and the manifest is where those live.
+#
+# Documents it declines are the ones there was nothing to read on: docTR found a mean
+# of 11.3 words on them against 123.0 on the ones it answered.
+abstain_below = 0.9
+device = "auto"
+
+[classifiers.layout]
+# The class-weighted LayoutLMv3. Kept selectable for comparison; `dit` beats it on
+# every profile and trains in a fifth of the time.
+model = "models/layout-balanced"
+abstain_below = 0.9
+
+[classifiers.llm]
+# Text only. 0.990 on clean documents and 0.571 on faxes -- the gap is OCR, not
+# comprehension.
+
 # ------------------------------------------------------------------ extractors
 
 [extractors.openai]

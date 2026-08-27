@@ -72,6 +72,32 @@ class TestWhatIsDropped:
 
 
 class TestRegistration:
+    def test_every_page_reading_classifier_registers(self):
+        from classify.base import CLASSIFIERS
+        assert {"dit", "layout"} <= set(CLASSIFIERS)
+
+    def test_only_dit_declines_to_read_text(self):
+        """NEEDS_TEXT is what lets the runner skip OCR, which is the expensive stage.
+        A text classifier that inherited False would be handed an empty string."""
+        from classify.base import CLASSIFIERS
+        reads = {n: getattr(c, "NEEDS_TEXT", True) for n, c in CLASSIFIERS.items()}
+        assert reads == {"dit": False, "layout": True, "keyword": True, "llm": True}
+
+    def test_the_defaults_name_the_checkpoints_that_were_measured(self):
+        """Both plugins pointed at an unweighted model at one stage. The unweighted
+        LayoutLM answered `form` whenever unsure and scored 0.821 on fax against
+        0.893; a default is how that difference gets published by accident."""
+        from classify.dit import DEFAULT_MODEL as dit_default
+        from classify.layout import DEFAULT_MODEL as layout_default
+        assert dit_default.endswith("dit-balanced")
+        assert layout_default.endswith("layout-balanced")
+
+    def test_dit_refuses_without_a_path(self):
+        """It rasterises the document itself, so a path is the one thing it needs."""
+        from classify.dit import DocumentImage
+        with pytest.raises(SystemExit):
+            DocumentImage().classify("INVOICE")
+
     def test_the_layout_classifier_registers_without_torch(self):
         """Importing the package must not drag in a gigabyte of CUDA. di-app has no
         torch and classifies with the LLM; only training needs the heavy stack."""
