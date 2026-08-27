@@ -8,6 +8,12 @@
 # variable -- DI_OPENAI_MODEL, DI_ANTHROPIC_EFFORT -- or by a command-line flag.
 
 [pipeline]
+# docTR everywhere, not the cascade. Measured on 75 degraded documents, same model and
+# prompts, only the OCR engine varying: docTR beat the cascade on every profile, by 31
+# points on photographs. The cascade's whole argument was cost, and the cost was not
+# real -- 3.6s a document against docTR's 4.0s, on a stage that is cached and paid once,
+# against 7.4 hours of extraction. See the README.
+normalizer = "doctr"
 extractor = "openai"
 
 # ------------------------------------------------------------------ extractors

@@ -66,8 +66,8 @@ finishing it is knowing whether to continue.
 |---|---|---|---|
 | **0** | Can any of this be measured? Corpus plus scoring harness, anchored by a self-test that must score exactly `1.000` and an empty-extractor baseline. | a scorer worth trusting | done |
 | **1** | Can a model read fields off a document it has never seen? Text layer only, type given, one call, no tools, no repair. | a field-accuracy number | done |
-| **2** | Can it read documents that are not clean? The normalizer becomes its own stage: degraded scans carry no text layer, so this is where OCR or a vision path has to earn its place. | degraded accuracy against clean | next |
-| **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | |
+| **2** | Can it read documents that are not clean? The normalizer becomes its own stage: degraded scans carry no text layer, so this is where OCR or a vision path has to earn its place. | degraded accuracy against clean | done |
+| **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | next |
 | **4** | Can it tell when it is wrong? Validators: arithmetic that must foot, dates that must parse, cross-field constraints that must hold. | defect precision and recall | |
 | **5** | Is its confidence real? Calibration from independent signals rather than model self-report, and routing what fails to a person. | a calibration curve | |
 | **6** | Can it repair itself? The bounded repair loop and tool-using extraction — the agentic pockets, arriving last because everything before them is what makes them measurable. | repair success rate | |
@@ -94,13 +94,15 @@ read documents.
 
 ```
 core/                       shared domain code: field normalisation, type registry
-extract/                    the extractor: PDF text -> schema-constrained fields
+normalize/                  the OCR stage: native text, tesseract, docTR, cascade
+classify/                   the classifier stage: keyword baseline, llm
+extract/                    the extractor: document text -> schema-constrained fields
 eval/                       scoring, the report format, the CLI
 tests/                      unit tests, fixtured off the committed samples
 tools/document-generator/   synthetic evaluation corpus (Docker; see its README)
 data/                       generated corpus — gitignored, regenerable from a seed
 reports/                    score reports — gitignored
-docker-compose.yml          on-demand services: document-generator, evaluator
+docker-compose.yml          on-demand services: generator, normalizer, extractor, evaluator
 ```
 
 `core/normalize.py` holds the field comparison primitives — is `03/29/2026` the same
@@ -238,6 +240,69 @@ docker compose run --rm evaluator score --predictions /reports/mine.jsonl
 
 `score --predictions self` must return exactly `1.000`, and `--predictions empty` gives
 the do-nothing baseline. Anything you measure sits between those two.
+
+## Phase 2: reading documents that are not clean
+
+Phase 1 read the embedded text layer and nothing else, which is fine until a document
+arrives as a photograph of a crumpled page. The generator produces 1,056 degraded
+variants of the corpus at three levels -- a decent office scanner, a 170 dpi fax, and a
+phone snapshot with perspective distortion -- as image-only PDFs with no text layer at
+all.
+
+The honest starting number was not a low score. It was **no score**: the extractor read
+zero characters from every one of the 1,056 and reported them skipped. That is the gap
+OCR had to close, measured rather than assumed.
+
+### Which OCR engine, measured rather than argued
+
+The normalizer is a plugin slot with competing implementations, so the comparison is a
+manifest edit. Seventy-five degraded documents, stratified across every type and
+profile, same model and prompts throughout -- only the OCR engine varies:
+
+| profile | n | cascade | docTR | delta |
+|---|---|---|---|---|
+| light | 29 | `0.905` | **`0.921`** | +1.6 |
+| photo | 18 | `0.502` | **`0.817`** | **+31.5** |
+| fax | 28 | `0.292` | **`0.305`** | +1.3 |
+
+Against `0.986` on the same documents before they were degraded.
+
+**Light degradation is close to solved.** An office-scanner document costs about six
+points end to end, which is shippable.
+
+**Photographs are an OCR problem, not a model problem.** The same model on the same
+pages scores `0.502` or `0.817` depending purely on which engine produced the text.
+Nothing about the prompt or the schema moves that number; the perspective distortion
+and uneven lighting are recovered by docTR's detector and lost by Tesseract's.
+
+**Faxes are not recoverable.** `0.305`, and no prompting fixes characters OCR never
+produced. The right system response is confidence routing to a person, and knowing
+where that threshold sits is what this phase bought.
+
+### The optimisation that cost 31 points
+
+The cascade -- cheap engine first, escalate to the expensive one only where confidence
+is poor -- is a good pattern and was the wrong choice here.
+
+Its entire argument was cost, and the cost was not real. It averaged 3.6s a document
+against docTR's 4.0s, because on faxes it runs *both* engines. Seven minutes saved
+across the corpus, on a stage that is cached and paid once, against 7.4 hours of
+extraction. An optimisation worth 1.4% of the pipeline.
+
+Meanwhile it lost 31 points on photographs, and the reason is worth keeping. Tesseract
+reports around `0.88` mean word confidence on photo documents whose text then extracts
+at `0.191`. Its confidence is well calibrated on clean scans and badly calibrated on
+distorted ones -- so the escalation rule, which trusted that number, kept exactly the
+documents it should have escalated.
+
+**A confidence signal is only useful where it is calibrated, and the place you most
+want to trust it is the place least likely to be true.** That is the lesson, and it
+lands squarely on Phase 5.
+
+The cascade stays in the codebase as a plugin. It remains the right pattern where OCR
+is not cached -- per-request production traffic, CPU-only deployment, an engine billed
+per page -- and running both engines over the same documents is what produced the
+comparison above. It is simply not what this pipeline should default to.
 
 ## Why the corpus comes first
 
