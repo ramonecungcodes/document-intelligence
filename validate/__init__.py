@@ -1,6 +1,10 @@
 """Validators: work out whether an extracted document is wrong.
 
     arithmetic   money that has to add up: line items, subtotals, tax, totals
+    required     fields the type registry says must be there, and are not
+    format       identifiers that have to be the right shape
+    range        numbers that have to sit inside a band
+    temporal     dates that have to run forwards, periods that must not overlap
 
 Every rule is scored twice, and the order is the point. Against the corpus *labels* a
 rule that fires on a clean document is simply wrong -- there is no extraction to blame
@@ -9,6 +13,6 @@ the second number, against extracted output, readable as defect detection rather
 as a measurement of the extractor wearing a validator's name.
 """
 from validate.base import Finding, Report, VALIDATORS, build_all, run  # noqa: F401
-from validate import arithmetic  # noqa: F401  (registration side effect)
+from validate import arithmetic, constraints, required  # noqa: F401  (registration side effect)
 
 __all__ = ["Finding", "Report", "VALIDATORS", "build_all", "run"]

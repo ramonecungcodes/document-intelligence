@@ -36,7 +36,8 @@ def score_records(validators, records_by_stem, corpus_root):
             report = run_validators(validators, record, doctype,
                                     doctype.variant_of(record))
             injected = set(record.get("irregularities") or [])
-            score.add(report.codes, injected, is_clean=not injected)
+            errors = {f.code for f in report.findings if f.severity == "error"}
+            score.add(report.codes, injected, is_clean=not injected, errors=errors)
             if report.findings:
                 findings.append({"file": record.get("file"),
                                  "injected": sorted(injected),

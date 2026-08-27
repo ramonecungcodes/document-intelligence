@@ -46,7 +46,12 @@ class ValidationScore:
     # than vanishing from the report.
     known: set = field(default_factory=set)
 
-    def add(self, found: set, injected: set, is_clean: bool = False) -> None:
+    def add(self, found: set, injected: set, is_clean: bool = False,
+            errors: set = None) -> None:
+        """`errors` is the subset of `found` that is severity error rather than
+        warning. Only those gate the self-test: a warning is a rule saying a person
+        should look, and a rule that cannot be certain should not be able to fail a
+        build."""
         self.documents += 1
         self.known |= injected
         for code in found & injected:
@@ -55,9 +60,10 @@ class ValidationScore:
             self.missed[code] += 1
         for code in found - injected:
             self.spurious[code] += 1
+        gating = found if errors is None else errors
         if is_clean:
             self.clean_documents += 1
-            self.clean_documents_flagged += bool(found)
+            self.clean_documents_flagged += bool(gating)
         else:
             self.defective_documents += 1
             self.defective_documents_flagged += bool(found)

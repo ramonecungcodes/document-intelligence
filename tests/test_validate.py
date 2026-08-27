@@ -106,3 +106,71 @@ class TestRegistry:
         report = run(build_all(), {"name": "x"}, doctypes.REGISTRY["resume"])
         assert "arithmetic" in " ".join(report.skipped)
         assert report.ok
+
+
+class TestConstraints:
+    def check(self, record, doc_type="form", variant=""):
+        from validate.constraints import Format, Range, Temporal
+        out = []
+        for v in (Format(), Range(), Temporal()):
+            if v.handles(doc_type):
+                out += v.check(record, doctypes.REGISTRY[doc_type], variant)
+        return {f.code for f in out}
+
+    def test_a_valid_ssn_passes_and_a_placeholder_does_not(self):
+        assert self.check({"ssn": "412-88-7301"}) == set()
+        assert "invalid_ssn_format" in self.check({"ssn": "000-00-0000"})
+
+    def test_an_absent_field_is_not_this_rule_s_business(self):
+        """A missing SSN belongs to `required`. Two rules firing on one absence
+        reports a single defect twice and makes precision a statement about overlap."""
+        assert self.check({"ssn": ""}) == set()
+        assert self.check({}) == set()
+
+    def test_employment_dates_are_years_not_dates(self):
+        """A rule written against start_date checked nothing at all: it found no
+        field, compared no values, and reported a clean 0.000 that read exactly like
+        the defect being absent."""
+        found = self.check({"work_history": [{"start_year": 2020, "end_year": 2015}]},
+                           doc_type="resume")
+        assert "impossible_employment_dates" in found
+
+    def test_services_may_share_a_billing_window(self):
+        """Clean multi-bill invoices bill several services over the same month, so a
+        rule keyed on overlap fires on documents that are fine -- it did, on 40."""
+        record = {"sections": [
+            {"service_period_start": "2026-03-13", "service_period_end": "2026-04-13"},
+            {"service_period_start": "2026-03-14", "service_period_end": "2026-04-13"}]}
+        assert self.check(record, doc_type="multi_bill_invoice") == set()
+
+    def test_an_identical_window_is_a_warning_not_an_error(self):
+        """It happens by chance on 2 of 352 clean documents, so it cannot gate -- but
+        a bill charging one period twice is worth a person's eye."""
+        from validate.constraints import Temporal
+        record = {"sections": [
+            {"service_period_start": "2026-03-13", "service_period_end": "2026-04-13"},
+            {"service_period_start": "2026-03-13", "service_period_end": "2026-04-13"}]}
+        found = Temporal().check(record, doctypes.REGISTRY["multi_bill_invoice"])
+        assert [f.severity for f in found] == ["warning"]
+
+
+class TestRequired:
+    def check(self, record, doc_type="invoice", variant=""):
+        from validate.required import Required
+        return {f.code for f in Required().check(
+            record, doctypes.REGISTRY[doc_type], variant)}
+
+    def test_an_empty_required_field_is_a_defect(self):
+        assert "missing_bill_to" in self.check({"bill_to": "", "invoice_number": "x"})
+
+    def test_a_field_never_extracted_is_not_a_defect(self):
+        """Absent from the record entirely means the extractor did not produce it,
+        which is a different thing from the document not carrying it."""
+        assert self.check({"invoice_number": "x"}) == set()
+
+    def test_the_schema_decides_what_is_optional_not_this_rule(self):
+        """Phase 1 marked fields a document may legitimately lack. A validator that
+        overrode that would punish the extractor for answering correctly."""
+        from validate.required import _optional_names
+        assert "service_location" in _optional_names(
+            doctypes.REGISTRY["multi_bill_invoice"], "")
