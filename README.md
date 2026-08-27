@@ -445,9 +445,17 @@ the baselines were reported beside it.
 while `by_type` misses 62 same-type joins — `0.487` recall on exactly the joins it was
 predicted to be blind to.
 
-It also loses on the more expensive axis. A **merge** hands the extractor two unrelated
-documents and produces a record for a document that never existed; an **over-cut** shows
-up as missing fields, which is visible. `every_page` makes no merges at all.
+It also makes no merges, and a merge is unambiguously expensive: two unrelated
+documents reach the extractor as one, and it emits a record for a document that never
+existed.
+
+An over-cut is not as cheap as it first looks, though, and running the pipeline end to
+end is what showed it. A two-page multi-bill invoice cut in half produces a second half
+that the classifier reads as a plain **invoice** — a header, a table and totals, with
+the repeated per-service structure that distinguishes the type sitting on the page that
+was cut away. So an over-cut does not merely lose fields; it can select the wrong
+schema and fill it confidently. Both failure directions can invent, which is not what
+this section originally claimed.
 
 `by_type` stays in the codebase. It is the right shape wherever multi-page documents
 are common — which this corpus is not — and running it is what produced the comparison.

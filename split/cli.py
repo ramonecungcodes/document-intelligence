@@ -2,7 +2,13 @@
 
     python -m split.cli run --splitter every_page
     python -m split.cli run --splitter by_type --limit 20
+    python -m split.cli apply --splitter every_page --into split
     python -m split.cli engines
+
+`run` scores a splitter against the recorded boundaries. `apply` writes the documents
+it found as their own PDFs, which is what makes the stage usable rather than merely
+measured: every stage after this one takes a path to one document, and a bundle is not
+one document.
 
 Both baselines are reported alongside whatever was asked for, because a splitter's F1
 is unreadable without them: `every_page` has perfect recall by construction and
@@ -74,6 +80,21 @@ def run(args) -> int:
     return 0
 
 
+def apply_cmd(args) -> int:
+    from split.apply import apply, summarise
+
+    config = config_mod.load(args.config)
+    corpus_root = args.corpus or CORPUS_ROOT
+    records = bundles(corpus_root, args.limit)
+    splitter = build(config=config, plugin=args.splitter)
+    print(f"{len(records)} bundles  -  {splitter.describe()}")
+    manifest, path = apply(splitter, records, corpus_root, args.into)
+    print(summarise(manifest, records))
+    print(f"\n  wrote {path}")
+    print(f"  extract from it:  python -m extract.cli run --manifest {path}")
+    return 0
+
+
 def engines(args) -> int:
     from core.plugins import describe
     config = config_mod.load(args.config)
@@ -97,12 +118,21 @@ def main(argv=None) -> int:
     go.add_argument("--out", default="", help="write the scores as JSON")
     go.add_argument("--config", default="")
 
+    ap = sub.add_parser("apply", help="write the documents a splitter found")
+    ap.add_argument("--splitter", default="")
+    ap.add_argument("--corpus", default="")
+    ap.add_argument("--into", default="split", help="subdirectory for the pieces")
+    ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--config", default="")
+
     ls = sub.add_parser("engines", help="show every splitter and its settings")
     ls.add_argument("--config", default="")
 
     args = parser.parse_args(argv)
     if args.command == "run":
         return run(args)
+    if args.command == "apply":
+        return apply_cmd(args)
     if args.command == "engines":
         return engines(args)
     return 2

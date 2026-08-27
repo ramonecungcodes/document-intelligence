@@ -85,6 +85,20 @@ def sample(records, doctype, limit):
     return taken
 
 
+def from_manifest(path: str, limit: int):
+    """Documents a splitter found, rather than documents the corpus declared.
+
+    The manifest carries `truth_source` beside each piece so the run can be scored
+    later. It is not read here and must not be: a piece whose type came from the
+    corpus's answer key would make the splitter and the classifier look like they
+    worked. Every piece goes through the classifier like any other unknown document,
+    which is why this mode requires --type-from classifier.
+    """
+    with open(path, encoding="utf-8") as handle:
+        pieces = json.load(handle)
+    return [p["file"] for p in (pieces[:limit] if limit else pieces)]
+
+
 def collect(corpus_root, only, limit):
     """Every corpus document, paired with the type declaration it should be read as."""
     jobs, unknown = [], set()
@@ -152,7 +166,8 @@ def predict_types(jobs, corpus_root, config, plugin, concurrency,
                 # as an abstention rather than crashing the run.
                 abstained.append((rel, result.confidence))
                 continue
-            if guess.name != true_type.name or result.variant != true_variant:
+            if true_type is not None and (guess.name != true_type.name
+                                          or result.variant != true_variant):
                 wrong.append((rel, f"{true_type.name}/{true_variant}".rstrip("/"),
                               f"{guess.name}/{result.variant}".rstrip("/")))
             predicted.append((guess, rel, result.variant))
@@ -160,9 +175,15 @@ def predict_types(jobs, corpus_root, config, plugin, concurrency,
                 print(f"  classified {done}/{len(jobs)}", flush=True)
 
     total = len(jobs)
+    known = any(j[0] is not None for j in jobs)
     right = len(predicted) - len(wrong)
-    print(f"  type from classifier: {right}/{total} exact (type and variant), "
-          f"{len(wrong)} wrong, {len(abstained)} declined")
+    if known:
+        print(f"  type from classifier: {right}/{total} exact (type and variant), "
+              f"{len(wrong)} wrong, {len(abstained)} declined")
+    else:
+        # Pieces from a splitter have no declared type to be right or wrong about.
+        print(f"  type from classifier: {len(predicted)}/{total} typed, "
+              f"{len(abstained)} declined")
     for rel, truth, guess in wrong[:10]:
         print(f"    {truth:26} read as {guess:26} {rel}")
     if len(wrong) > 10:
@@ -200,7 +221,17 @@ def _resolve_out(value: str) -> str:
 
 def run(args):
     corpus_root = args.corpus
-    jobs, unknown = collect(corpus_root, args.only, args.limit)
+    if args.manifest:
+        if args.type_from != "classifier":
+            raise SystemExit(
+                "--manifest holds documents a splitter found, so nothing knows their "
+                "type yet.\n  Add --type-from classifier.")
+        relatives = from_manifest(args.manifest, args.limit)
+        # doctype is filled in by the classifier; None is a placeholder the
+        # classification pass replaces, and nothing may read it before then.
+        jobs, unknown = [(None, rel, "") for rel in relatives], set()
+    else:
+        jobs, unknown = collect(corpus_root, args.only, args.limit)
     for stem in sorted(unknown):
         print(f"skipping labels/{stem}.json: no document type registered", file=sys.stderr)
     if not jobs:
@@ -540,6 +571,9 @@ def main(argv=None):
                          "pipeline works it out, which is what production does.")
     go.add_argument("--classifier", default="",
                     help="which classifier plugin, when --type-from classifier")
+    go.add_argument("--manifest", default="",
+                    help="extract the documents a splitter found (split.cli apply) "
+                         "instead of the documents the corpus declares")
 
     show = sub.add_parser("schema", help="print the schema and prompt for a type")
     show.add_argument("--type", required=True)
