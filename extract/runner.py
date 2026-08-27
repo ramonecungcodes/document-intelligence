@@ -22,7 +22,7 @@ from core.doctypes import DocType
 from extract import schema as schema_mod
 from extract.rules import RULES
 from extract.backends import Usage
-from extract.text import read_pdf
+from extract.text import read_pdf   # the default normalizer, for callers that pass none
 
 
 @dataclass
@@ -70,22 +70,35 @@ def collapse_optional(record: dict, doctype, variant: str = "") -> None:
 
 
 def extract_document(backend, doctype: DocType, pdf_path: str, relative_path: str,
-                     variant: str = "", rule_settings=None) -> Result:
+                     variant: str = "", rule_settings=None, normalizer=None) -> Result:
     """Read one PDF and return a prediction record shaped like a corpus label.
 
     `variant` narrows the schema for types that have them -- a W-9 is asked for the ten
     fields a W-9 has, not the sixty-four spanning every kind of form. Like the document
     type itself it is given rather than predicted; classification is a later phase.
     """
-    page_text = read_pdf(pdf_path)
+    # Whoever asked for this extraction decides how the text is obtained. Defaulting to
+    # the embedded text layer keeps Phase 1 behaviour for every caller that does not
+    # care, while a degraded run supplies the `cached` normalizer and reads OCR output
+    # this file never has to know about.
+    page_text = normalizer.read(pdf_path) if normalizer is not None else read_pdf(pdf_path)
     base = {"file": relative_path, "doc_type": doctype.name}
     if variant and doctype.variant_key:
         base[doctype.variant_key] = variant
 
     if page_text.empty:
-        # No text layer: the honest answer is that this extractor cannot read it.
-        base["_note"] = "no text layer"
-        return Result(record=base, skipped="no text layer")
+        # Nothing to read. Under the native reader that means the PDF has no text
+        # layer; under an OCR normalizer it means the engine recovered nothing from the
+        # page. Recording which is which matters -- they are different findings, and a
+        # run that conflates them cannot say whether OCR helped.
+        base["_note"] = f"no text ({page_text.engine or 'native'})"
+        base["_normalizer"] = page_text.provenance()
+        return Result(record=base, skipped="no text")
+
+    # How the text was obtained travels with the prediction. An accuracy figure on
+    # degraded documents means something very different depending on which engine read
+    # them, and a number whose provenance is unknown is not a measurement.
+    base["_normalizer"] = page_text.provenance()
 
     completion = backend.complete(
         system=schema_mod.instructions(doctype, variant),

@@ -358,3 +358,35 @@ class TestCollapseOptional:
         assert self.collapse({"sections": None}) == {"sections": None}
         assert self.collapse({"sections": ["not a dict"]}) == {"sections": ["not a dict"]}
         assert self.collapse({"sections": [{}]}) == {"sections": [{}]}
+
+
+class TestAllFailedIsAFailure:
+    """A run where nothing succeeded must not exit 0.
+
+    Twice in one session a run wrote a predictions file, printed a summary and exited
+    successfully having accomplished nothing -- once with the Docker daemon down, once
+    when every request failed to reach the model server. Both looked like results until
+    someone read the file. The second one wrote twelve identical connection errors.
+    """
+
+    def test_identical_failures_collapse_to_one_cause(self):
+        from extract.cli import _cause
+        a = _cause("APIConnectionError: Connection error.")
+        b = _cause("APIConnectionError: Connection error.")
+        assert a == b
+        assert "APIConnectionError" in a
+
+    def test_different_failures_stay_distinct(self):
+        from extract.cli import _cause
+        assert _cause("APIConnectionError: Connection error.") != \
+               _cause("truncated: ran out of tokens mid-answer after 26198 characters")
+
+    def test_document_specific_detail_does_not_split_one_cause(self):
+        """Twelve documents failing the same way is one problem, not twelve."""
+        from extract.cli import _cause
+        assert _cause("unparseable JSON: Expecting value: line 1 column 25910") == \
+               _cause("unparseable JSON: Expecting value: line 1 column 309")
+
+    def test_a_message_with_no_colon_survives(self):
+        from extract.cli import _cause
+        assert _cause("something went wrong") == "something went wrong"
