@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from collections import Counter
 import re
 import sys
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -97,6 +98,18 @@ def collect(corpus_root, only, limit):
     return jobs, unknown
 
 
+def _cause(error: str) -> str:
+    """The shape of a failure, with the document-specific detail stripped off.
+
+    Twelve identical connection errors are one problem, not twelve, and printing them
+    twelve times buries that. Grouping on the exception type plus the leading words of
+    the message is enough to tell "the endpoint is unreachable" from "this page had bad
+    JSON" without pretending to parse messages nobody controls.
+    """
+    head = error.split(":", 2)
+    return ":".join(head[:2]).strip() if len(head) > 1 else error.strip()
+
+
 def _resolve_out(value: str) -> str:
     """Resolve --out against the reports directory.
 
@@ -155,16 +168,56 @@ def run(args):
         raise SystemExit(f"configuration error: {error}")
     print(f"  rules: {', '.join(active) or 'none'}")
 
+    # How text is obtained is a plugin choice like any other. `native` keeps Phase 1
+    # behaviour; `cached` reads what a normalizer run already produced, so a degraded
+    # corpus is extracted without this image carrying an OCR dependency.
+    from normalize.base import NORMALIZERS, build as build_normalizer
+    # A normalizer that keys a cache on corpus-relative paths has to agree with this
+    # run about where the corpus starts. Making the caller set a second variable to
+    # match --corpus is a trap: they disagree silently and every document reports as
+    # uncached. This run already knows the answer, so it tells the plugin -- but only
+    # if the plugin declares that setting, since binding an unknown key is an error
+    # for good reason.
+    chosen = (config.chosen("normalizer", args.normalizer) or "native").strip().lower()
+    declares = {spec.name for spec in NORMALIZERS.get(chosen, type("x", (), {"SETTINGS": ()})).SETTINGS}
+    overrides = {"corpus": corpus_root} if "corpus" in declares else None
+    normalizer = build_normalizer(config=config, plugin=args.normalizer, overrides=overrides)
+    print(f"  normalizer: {normalizer.describe()}")
+
     def work(job):
         doctype, rel, variant = job
         return extract_document(backend, doctype, os.path.join(corpus_root, rel), rel,
-                                variant=variant, rule_settings=rule_settings)
+                                variant=variant, rule_settings=rule_settings,
+                                normalizer=normalizer)
 
     # Stream each prediction to disk as it lands rather than accumulating in memory.
     # An hour of extraction should not be one crash away from nothing, and a partial
     # file is scoreable -- the scorer already reports what it could not match.
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
+    # --resume keeps the successes of an interrupted run and redoes the rest. The
+    # watchdog pattern depends on this: a run that stalls is killed and relaunched,
+    # and without resume every relaunch starts from document one -- which turns one
+    # hung request into a run that can never finish. Failures are retried on purpose;
+    # a connection error at 2am should not be a permanent verdict.
+    already = {}
+    if args.resume and os.path.exists(out_path):
+        with open(out_path, encoding="utf-8") as previous:
+            for line in previous:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue        # the line a kill interrupted mid-write
+                if not record.get("_error"):
+                    already[record["file"]] = record
+    if already:
+        jobs = [job for job in jobs if job[1] not in already]
+        print(f"  resume: keeping {len(already)} finished, {len(jobs)} to go")
+
     stream = open(out_path, "w", encoding="utf-8", newline="\n")
+    for record in already.values():
+        stream.write(json.dumps(record) + "\n")
+    stream.flush()
 
     aborted = ""
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
@@ -247,6 +300,26 @@ def run(args):
     print(f"  {total.input_tokens:,} in / {total.output_tokens:,} out{reasoning}"
           f"  ·  {cost}  ·  {total.seconds:.0f}s of model time")
     print()
+
+    # A run where nothing succeeded is a failed run, whatever the exit code says.
+    #
+    # Twice in one session a run wrote a file, printed a summary and exited 0 having
+    # accomplished nothing: once when the Docker daemon was down, once when every
+    # request failed to reach the model server. Both looked like results until the
+    # predictions were read. Exiting non-zero and naming the shared cause turns a
+    # silent no-op into something that cannot be mistaken for an answer.
+    extracted = done - failed - skipped
+    if not extracted and failed:
+        causes = Counter(_cause(r.error) for r in results if r.error)
+        cause, count = causes.most_common(1)[0]
+        print(f"EVERY document failed. {count} of {failed} share one cause:")
+        print(f"  {cause}")
+        if len(causes) > 1:
+            print(f"  ...and {len(causes) - 1} other kind(s); see the predictions file.")
+        print()
+        print("  Nothing was extracted, so there is nothing to score.")
+        return 1
+
     print(f"score it:  python -m eval.cli score --predictions {out_path}")
     return 0
 
@@ -353,6 +426,9 @@ def main(argv=None):
     go.add_argument("--out", default=None, metavar="NAME",
                     help=f"file name inside {REPORTS_DIR} "
                          f"(default: predictions.jsonl)")
+    go.add_argument("--normalizer", default="",
+                    help="how text is obtained: native | cached | tesseract | ... "
+                         "(see `normalize.cli engines`)")
     go.add_argument("--extractor", default="", help="which extractor plugin (see di.toml)")
     go.add_argument("--model", default="", help="override the chosen plugin's model")
     go.add_argument("--config", default="", help="path to the manifest (default: di.toml)")
@@ -361,6 +437,8 @@ def main(argv=None):
                     help="stop the run if any single document takes longer than this")
     go.add_argument("--no-think", action="store_true",
                     help="disable chain-of-thought (overrides DI_NO_THINK)")
+    go.add_argument("--resume", action="store_true",
+                    help="keep successes already in --out; redo failures and the rest")
     go.add_argument("--dry-run", action="store_true", help="list the work, call nothing")
 
     show = sub.add_parser("schema", help="print the schema and prompt for a type")

@@ -127,6 +127,17 @@ def _array(group: Group) -> dict:
     return {
         "type": "array",
         "description": getattr(group, "help", "") or default,
+        # An unbounded array is an invitation to loop. Under constrained decoding the
+        # model is never invalid while emitting one more element, so nothing forces it
+        # to close the array -- it can only stop by exhausting max_tokens. One resume
+        # did exactly that, repeating {"company": null, "title": "IT Manager",
+        # "start_year": 2012} until it burned 49,853 characters, and no timeout could
+        # catch it because a looping model streams steadily and never goes idle.
+        #
+        # The ceiling is deliberately far above anything real: the largest repeating
+        # group anywhere in the corpus is six line items. This is not a modelling
+        # decision about how many rows a document may have, it is a stop condition.
+        "maxItems": getattr(group, "max_rows", 50),
         "items": _object(group.fields, group.groups),
     }
 

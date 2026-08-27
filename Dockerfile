@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY di.toml ./
 COPY core/ ./core/
+COPY normalize/ ./normalize/
 COPY eval/ ./eval/
 COPY extract/ ./extract/
 # The scoring tests fixture off six committed sample documents. Without them 14
