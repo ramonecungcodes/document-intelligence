@@ -67,7 +67,7 @@ finishing it is knowing whether to continue.
 | **0** | Can any of this be measured? Corpus plus scoring harness, anchored by a self-test that must score exactly `1.000` and an empty-extractor baseline. | a scorer worth trusting | done |
 | **1** | Can a model read fields off a document it has never seen? Text layer only, type given, one call, no tools, no repair. | a field-accuracy number | done |
 | **2** | Can it read documents that are not clean? The normalizer becomes its own stage: degraded scans carry no text layer, so this is where OCR or a vision path has to earn its place. | degraded accuracy against clean | done |
-| **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | next |
+| **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | classifier done; splitter blocked |
 | **4** | Can it tell when it is wrong? Validators: arithmetic that must foot, dates that must parse, cross-field constraints that must hold. | defect precision and recall | |
 | **5** | Is its confidence real? Calibration from independent signals rather than model self-report, and routing what fails to a person. | a calibration curve | |
 | **6** | Can it repair itself? The bounded repair loop and tool-using extraction — the agentic pockets, arriving last because everything before them is what makes them measurable. | repair success rate | |
@@ -95,7 +95,7 @@ read documents.
 ```
 core/                       shared domain code: field normalisation, type registry
 normalize/                  the OCR stage: native text, tesseract, docTR, cascade
-classify/                   the classifier stage: keyword baseline, llm
+classify/                   the classifier stage: keyword baseline, llm, layout, dit
 extract/                    the extractor: document text -> schema-constrained fields
 eval/                       scoring, the report format, the CLI
 tests/                      unit tests, fixtured off the committed samples
@@ -304,6 +304,109 @@ is not cached -- per-request production traffic, CPU-only deployment, an engine 
 per page -- and running both engines over the same documents is what produced the
 comparison above. It is simply not what this pipeline should default to.
 
+## Phase 3: working out what a document is
+
+Phases 1 and 2 were handed the document type by the corpus. That was deliberate —
+mixing extraction and classification would have made a bad number impossible to
+attribute to either — but it is not how the system ever runs. A folder of scanned
+paperwork does not come labelled.
+
+Five types, so the floor is not zero. Always answering the commonest type scores
+`0.200` on a balanced sample having read nothing, and every result below is reported
+against that.
+
+| classifier | reads | clean | fax |
+|---|---|---|---|
+| keyword | printed phrases | `0.700` | — |
+| llm | OCR text | `0.990` | `0.571` |
+| LayoutLMv3 | words + boxes + image | `1.000` | `0.943` |
+| **dit** | **the page image alone** | **`1.000`** | **`0.958`** |
+
+The keyword baseline is a floor, not a candidate: its phrases are drawn from what the
+generator prints, which real vendors would not oblige it by repeating. It reaches
+`0.350` on multi-bill invoices, which say "Invoice" exactly as loudly as invoices do.
+
+### The fax gap is not comprehension
+
+The LLM loses 42 points between clean documents and faxes, and the cause is upstream of
+the model. docTR finds **62% of the words** on a 170 dpi bitonal page — the rest are not
+misread, they are never found. No amount of reading recovers a word that was never
+there.
+
+Geometry survives what glyphs do not, and that was checked before anything was trained.
+A coarse ink-occupancy grid — no words in it at all, just where marks sit on the page —
+nearest-neighboured against the clean corpus:
+
+| profile | word retention | layout fidelity | type accuracy from ink alone |
+|---|---|---|---|
+| light | `0.954` | `0.983` | `1.000` |
+| photo | `0.938` | `0.958` | `0.997` |
+| fax | `0.645` | `0.772` | `0.875` |
+
+A fax keeps two-thirds of its words and three-quarters of its layout, and position
+alone identifies the type better than the LLM reading the text does.
+
+### Dropping the text made it better
+
+The result worth keeping is that **the image-only model beats the multimodal one**.
+LayoutLMv3 gets the words, the word boxes *and* the page; DiT gets only the page; DiT
+wins on every profile and trains in a fifth of the time.
+
+That is not an argument against fusion in general — LayoutLMv3 *is* fusion, learned and
+early, which is strictly more expressive than averaging two models' probabilities. It is
+an argument about *these* documents. The failure modes are correlated: DiT's unsure
+documents carry a mean of 43 OCR words against 92.5 for its confident ones, so a text
+branch goes blind exactly where the image branch needs help. Fusion pays when errors are
+independent, and degradation takes out both at once.
+
+### Held out by page design, not by document
+
+A perfect score on a generated corpus is a reason for suspicion. Every document of a
+type is drawn from a handful of designs, so holding out *documents* cannot separate a
+model that learned what an invoice is from one that memorised what this corpus's
+invoices look like. Measured directly: DiT scores `1.000` on faxes held out by document
+and `0.958` held out by page design. The gap is what it had memorised.
+
+The numbers above are the design-holdout ones. Every document exists four times — clean,
+light, photo, fax — so the split is by source document too; training on a document's
+light version while testing its fax version would measure memorisation of that document.
+
+### Confidence does the routing
+
+`0.958` is not the number the pipeline runs on. Every error DiT made on unseen-design
+faxes arrived below `0.90` confidence, so that is where `di.toml` sets the floor:
+
+| profile | coverage at 0.90 | accuracy when it answers |
+|---|---|---|
+| clean | 100% | `1.000` |
+| light | 100% | `1.000` |
+| photo | 98.6% | `1.000` |
+| fax | 88.7% | `1.000` |
+
+One threshold, no errors anywhere it commits, and it costs essentially nothing on the
+profiles that were already solved. The documents it declines are the ones there was
+least to read on — the 43-against-92.5 word gap above is the same split. It abstains
+where the page has gone blank, which is the typed-decision discipline Phase 1 applied
+to fields, arriving one stage earlier.
+
+And because DiT reads no text, this stage runs *before* the normalizer: classification
+costs a page render rather than an OCR pass over the corpus.
+
+### What this phase did not close
+
+The **splitter has no corpus**. Zero multi-document files exist, so the risk that a
+scanned batch holds three documents in one PDF is untested — it needs generator work
+before it can be measured, and claiming it works on the strength of the classifier
+would be exactly the unattributable number this project exists to avoid.
+
+Extraction still receives the *true* type. Wiring the predicted type through and
+measuring what classification costs downstream is the remaining piece.
+
+These figures also predate the ten-design generator: invoices and purchase orders
+carried three and two designs when they were measured, and the design holdout could not
+be applied to those two types at all. Regenerating is what turns that from an untested
+assumption into a number.
+
 ## Why the corpus comes first
 
 The build order is driven by **what risk each phase retires**, and every phase ends with
@@ -311,7 +414,8 @@ a number that says whether to continue. The corpus and the scoring harness come 
 any pipeline code, so that the very first extractor has something to be measured against
 — and so every change after it can be attributed.
 
-The corpus covers five document types across 3–8 layouts each, a parallel defective set
+The corpus covers five document types — ten page designs each for invoices, purchase
+orders and multi-bill invoices, three for forms and eight for resumes — a parallel defective set
 with 40 tagged defect classes, and five degradation profiles from *clean office scanner*
 to *photocopied then faxed*. Because every degraded document keeps its source label,
 detection accuracy and extraction accuracy can be scored independently, per degradation
