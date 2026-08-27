@@ -23,9 +23,38 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+LABEL_SEPARATOR = ":"
+
+
+def labels() -> tuple:
+    """Every answer a classifier may give, from the type registry itself.
+
+    Not five, nine. `form` is one document type with five variants whose field sets
+    differ by more than a name -- onboarding asks for 22 fields, w4 for 9 -- and the
+    extractor selects between them. A classifier that stops at `form` has answered
+    half the question and left the corpus to supply the rest, which is exactly the
+    hand-over Phase 3 exists to remove.
+    """
+    from core import doctypes
+    out = []
+    for name, doctype in sorted(doctypes.REGISTRY.items()):
+        if doctype.variants:
+            out += [f"{name}{LABEL_SEPARATOR}{v}" for v in sorted(doctype.variants)]
+        else:
+            out.append(name)
+    return tuple(out)
+
+
+def split_label(label: str):
+    """`form:w9` -> ("form", "w9"); `invoice` -> ("invoice", "")."""
+    head, _, tail = label.partition(LABEL_SEPARATOR)
+    return head, tail
+
+
 @dataclass
 class Classification:
     doc_type: str                        # "" when the classifier declines to guess
+    variant: str = ""                    # which field set, for a type that has several
     confidence: Optional[float] = None   # 0-1, when the classifier can say
     runner_up: str = ""                  # the second-best type, if there was one
     evidence: str = ""                   # what it matched or cited
@@ -36,9 +65,18 @@ class Classification:
     def abstained(self) -> bool:
         return not self.doc_type
 
+    @property
+    def label(self) -> str:
+        """Type and variant as one string, the form a model is trained on."""
+        if not self.doc_type:
+            return ""
+        return (f"{self.doc_type}{LABEL_SEPARATOR}{self.variant}" if self.variant
+                else self.doc_type)
+
     def provenance(self) -> dict:
         return {
             "engine": self.engine,
+            "variant": self.variant or None,
             "confidence": self.confidence,
             "runner_up": self.runner_up or None,
             "evidence": (self.evidence[:120] or None),

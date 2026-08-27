@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 import time
 
-from classify.base import Classification, register
+from classify.base import Classification, register, split_label
 from core.plugins import Setting
 
 # The class-weighted checkpoint. The unweighted one answered `form` whenever it
@@ -112,13 +112,16 @@ class Layout:
         labels = self._model.config.id2label
         best = labels[order[0].item()]
         confidence = probability[order[0]].item()
+        # The head is trained on `form:w9`, not `form`: the variant is what selects
+        # the field set, and returning only the type would leave that to the corpus.
+        doc_type, variant = split_label(best)
 
         if self.abstain_below and confidence < self.abstain_below:
-            best = ""
+            doc_type, variant = "", ""
         return Classification(
-            doc_type=best,
+            doc_type=doc_type, variant=variant,
             confidence=round(confidence, 4),
-            runner_up=labels[order[1].item()],
+            runner_up=split_label(labels[order[1].item()])[0],
             evidence=f"{len(words)} words with boxes on page one",
             engine=f"layout:{os.path.basename(self.model_dir)}",
             seconds=time.time() - started)

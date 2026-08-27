@@ -594,6 +594,69 @@ def _mb_roll(x):
     x["total"] = round(sum(v["total"] for v in s), 2)
     x["section_count"] = len(s)
 
+def defect_multibill(x):
+    """Defects specific to split billing: the roll-up disagrees, or a section cannot be
+    routed to its own internal invoice because its identifier is missing or duplicated."""
+    pool = ["section_total_mismatch", "invoice_total_not_sum_of_sections", "duplicate_section_account",
+            "missing_section_account", "missing_section_period", "overlapping_service_periods",
+            "negative_section_total", "section_count_mismatch", "section_line_item_math_error",
+            "missing_invoice_number", "missing_bill_to"]
+    if len(x["sections"]) < 2:
+        pool = [p for p in pool if p not in ("duplicate_section_account", "overlapping_service_periods")]
+    # Order matters. Anything that mutates a section re-rolls the invoice totals, which
+    # would quietly repair a header defect applied earlier -- so the two defects that
+    # exist purely as a disagreement in the header are always applied last.
+    order = ["section_line_item_math_error", "section_total_mismatch", "negative_section_total",
+             "missing_section_account", "duplicate_section_account", "overlapping_service_periods",
+             "missing_section_period", "missing_invoice_number", "missing_bill_to",
+             "invoice_total_not_sum_of_sections", "section_count_mismatch"]
+    irr = []
+    locked = set()          # sections an earlier defect needs left intact
+    for defect in sorted(random.sample(pool, random.randint(1, 2)), key=order.index):
+        secs = x["sections"]
+        if defect == "section_total_mismatch":
+            s = random.choice(secs)
+            s["total"] = round(s["total"] + random.choice([-1, 1]) * random.uniform(9, 180), 2)
+            _mb_roll(x)                      # the invoice still foots to the printed sections
+        elif defect == "invoice_total_not_sum_of_sections":
+            x["total"] = round(x["total"] + random.choice([-1, 1]) * random.uniform(15, 320), 2)
+        elif defect == "duplicate_section_account":
+            have = [i for i in range(len(secs)) if secs[i]["account_number"]]
+            if len(have) < 2:
+                continue
+            a, b = random.sample(have, 2)
+            secs[b]["account_number"] = secs[a]["account_number"]
+        elif defect == "missing_section_account":
+            secs[random.choice([i for i in range(len(secs))])]["account_number"] = ""
+        elif defect == "missing_section_period":
+            free = [i for i in range(len(secs)) if i not in locked]
+            if not free:                 # an overlap defect owns every section; skip rather
+                continue                 # than record a tag the document does not show
+            s = secs[random.choice(free)]
+            s["service_period_start"] = ""; s["service_period_end"] = ""
+        elif defect == "overlapping_service_periods":
+            have = [i for i in range(len(secs)) if secs[i]["service_period_start"]]
+            if len(have) < 2:
+                continue
+            a, b = random.sample(have, 2)
+            secs[b]["service_period_start"] = secs[a]["service_period_start"]
+            secs[b]["service_period_end"] = secs[a]["service_period_end"]
+            locked |= {a, b}
+        elif defect == "negative_section_total":
+            s = random.choice(secs); s["total"] = -abs(s["total"]); _mb_roll(x)
+        elif defect == "section_count_mismatch":
+            x["section_count"] = len(secs) + random.choice([-1, 1, 1])
+        elif defect == "section_line_item_math_error":
+            s = random.choice(secs); it = random.choice(s["line_items"])
+            it["amount"] = round(it["amount"] + random.uniform(8, 130), 2)
+        elif defect == "missing_invoice_number":
+            x["invoice_number"] = ""
+        elif defect == "missing_bill_to":
+            x["bill_to"] = ""
+        irr.append(defect)
+    return sorted(set(irr))
+
+
 def make_multibill(vendor, idx, base_date):
     idate = base_date + datetime.timedelta(days=random.randint(0, 150))
     term = random.choice(TERMS)

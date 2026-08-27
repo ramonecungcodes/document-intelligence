@@ -33,7 +33,7 @@ from __future__ import annotations
 import os
 import time
 
-from classify.base import Classification, register
+from classify.base import Classification, register, split_label
 from core.plugins import Setting
 
 DEFAULT_MODEL = os.environ.get("DI_DIT_MODEL", "models/dit-balanced")
@@ -112,16 +112,19 @@ class DocumentImage:
         labels = self._model.config.id2label
         best = labels[order[0].item()]
         confidence = probability[order[0]].item()
+        # The head is trained on `form:w9`, not `form`: the variant is what selects
+        # the field set, and returning only the type would leave that to the corpus.
+        doc_type, variant = split_label(best)
 
         if self.abstain_below and confidence < self.abstain_below:
             # Not a failure. Every one of this model's errors on unseen-design faxes
             # sat below 0.90, so declining here is the difference between a wrong
             # extraction schema and a document a person looks at.
-            best = ""
+            doc_type, variant = "", ""
         return Classification(
-            doc_type=best,
+            doc_type=doc_type, variant=variant,
             confidence=round(confidence, 4),
-            runner_up=labels[order[1].item()],
+            runner_up=split_label(labels[order[1].item()])[0],
             evidence="page image, no text read",
             engine=f"dit:{os.path.basename(self.model_dir)}",
             seconds=time.time() - started)

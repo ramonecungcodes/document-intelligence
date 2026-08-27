@@ -63,7 +63,14 @@ from normalize import store                                # noqa: E402
 TYPE_OF = {"forms": "form", "invoices": "invoice",
            "multi_bill_invoices": "multi_bill_invoice",
            "purchase_orders": "purchase_order", "resumes": "resume"}
-LABELS = sorted(set(TYPE_OF.values()))
+# Nine, not five. `form` covers five variants whose field sets differ by more than a
+# name -- onboarding asks for 22 fields, w4 for 9 -- and the extractor picks between
+# them. Training on `form` would leave that choice to the corpus, which is the
+# hand-over this phase exists to remove. The list comes from the type registry so the
+# classifier and the extractor cannot disagree about what the answers are.
+from classify.base import labels as _labels, split_label     # noqa: E402
+
+LABELS = list(_labels())
 PROFILES = ("light", "photo", "fax")
 
 
@@ -111,21 +118,48 @@ def unseen_templates(by_layout):
     return {folder: max(seen) for folder, seen in grouped.items()}
 
 
-def catalogue(repo: str):
+def variant_index(repo: str) -> dict:
+    """file stem -> the variant its own label file records, for types that have them."""
+    import glob
+    from core import doctypes
+    found = {}
+    for path in glob.glob(os.path.join(repo, "data", "labels", "*.json")):
+        stem = os.path.basename(path)[:-5]
+        doctype = doctypes.for_label_file(stem)
+        if doctype is None or not doctype.variant_key:
+            continue
+        with open(path, encoding="utf-8") as handle:
+            records = json.load(handle)
+        records = records if isinstance(records, list) else (
+            records.get("documents") or records.get("records") or [])
+        for record in records:
+            variant = doctype.variant_of(record)
+            key = record.get("file", "").replace("\\", "/")
+            if variant and key:
+                found[key[:-4] if key.endswith(".pdf") else key] = variant
+    return found
+
+
+def catalogue(repo: str, require_ocr: bool = True):
     """Every (path, words, label, profile, source) the training set can draw on.
 
     Degraded documents read their words from the docTR cache; clean ones read theirs
     from the PDF's own text layer, which is exact and free. A document whose OCR has
     not been run yet is skipped rather than silently read some other way -- a training
     set that quietly mixes engines is one whose result cannot be attributed.
+
+    Except for the image architecture, which reads no words at all. Making DiT wait on
+    an OCR pass it never consults would have quietly trained it on the 352 clean
+    documents alone and called the result a degradation number.
     """
     from normalize.native import NativeText
 
     native = NativeText(keep_words=True)
     cache = os.path.join(repo, "data", "normalized")
+    variants = variant_index(repo)
     items, missing = [], 0
 
-    for folder, label in TYPE_OF.items():
+    for folder, _base_type in TYPE_OF.items():
         clean_dir = os.path.join(repo, "data", folder)
         if not os.path.isdir(clean_dir):
             continue
@@ -133,6 +167,8 @@ def catalogue(repo: str):
             if not name.endswith(".pdf"):
                 continue
             source = f"{folder}/{name[:-4]}"
+            variant = variants.get(source, "")
+            label = f"{TYPE_OF[folder]}:{variant}" if variant else TYPE_OF[folder]
             items.append({"path": os.path.join(clean_dir, name), "label": label,
                           "profile": "clean", "source": source, "words": None,
                           "reader": "native"})
@@ -141,7 +177,7 @@ def catalogue(repo: str):
                 degraded = os.path.join(repo, "data", "degraded", key)
                 if not os.path.exists(degraded):
                     continue
-                if not store.exists(cache, "doctr", key):
+                if require_ocr and not store.exists(cache, "doctr", key):
                     missing += 1
                     continue
                 items.append({"path": degraded, "label": label, "profile": profile,
@@ -160,8 +196,10 @@ def build_features(items, native, repo: str, require_words: bool = True):
     """
     built = []
     for index, item in enumerate(items, 1):
-        if item["reader"] == "native":
-            words = native.read(item["path"]).words
+        if item["reader"] == "native" or not require_words:
+            # The image architecture never looks at these; reading OCR JSON for a
+            # thousand documents to hand it an unused list is pure latency.
+            words = native.read(item["path"]).words if item["reader"] == "native" else []
         else:
             words = store.read(os.path.join(repo, "data", "normalized"),
                                "doctr", item["words"]).words
@@ -208,7 +246,7 @@ def main(argv=None) -> int:
 
     repo = os.path.abspath(args.repo)
     test_sources = held_out(repo)
-    items, missing, native = catalogue(repo)
+    items, missing, native = catalogue(repo, require_ocr=args.arch != "image")
     if missing:
         print(f"note: {missing} degraded documents have no docTR text yet; skipped")
 
