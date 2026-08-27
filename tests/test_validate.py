@@ -174,3 +174,39 @@ class TestRequired:
         from validate.required import _optional_names
         assert "service_location" in _optional_names(
             doctypes.REGISTRY["multi_bill_invoice"], "")
+
+
+class TestFieldNamesComeFromTheSchema:
+    """Three rules in a row checked a field the schema does not have, and every one
+    failed the same silent way: no field found, nothing compared, a clean 0.000 that
+    reads exactly like the defect being absent rather than the rule missing it."""
+
+    def test_the_claim_adjuster_field_is_named_as_the_schema_names_it(self):
+        from validate.required import REQUIRED_FORM
+        names = {s.name for s in doctypes.REGISTRY["form"].fields_for("claim")}
+        for field in REQUIRED_FORM.get("claim", {}):
+            assert field in names, f"{field} is not in the claim schema"
+
+    def test_every_required_field_exists_on_the_variant_it_is_demanded_of(self):
+        from validate.required import CHOICES, REQUIRED, REQUIRED_FORM
+        for type_name, wanted in REQUIRED.items():
+            names = {s.name for s in doctypes.REGISTRY[type_name].fields_for("")}
+            for field in wanted:
+                assert field in names, f"{field} is not in the {type_name} schema"
+        form = doctypes.REGISTRY["form"]
+        for variant, wanted in list(REQUIRED_FORM.items()) + list(CHOICES.items()):
+            if not variant:
+                continue
+            names = {s.name for s in form.fields_for(variant)}
+            for field in wanted:
+                assert field in names, f"{field} is not in the {variant} schema"
+
+    def test_a_w9_tin_may_be_an_ssn_or_an_ein(self):
+        """It is not a check on a single field: either one filled is a complete
+        answer, and demanding a particular one fires on half the clean W-9s."""
+        from validate.required import Required
+        form = doctypes.REGISTRY["form"]
+        codes = lambda r: {f.code for f in Required().check(r, form, "w9")}
+        assert "missing_tin" not in codes({"ssn": "412-88-7301", "ein": ""})
+        assert "missing_tin" not in codes({"ssn": "", "ein": "12-3456789"})
+        assert "missing_tin" in codes({"ssn": "", "ein": ""})

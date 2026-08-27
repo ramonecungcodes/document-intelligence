@@ -45,6 +45,62 @@ def score_records(validators, records_by_stem, corpus_root):
     return score, findings
 
 
+def run_predictions(args) -> int:
+    """The rules against what the extractor actually produced.
+
+    This is the number a person experiences, and it is the product of two things: the
+    rule and the extraction. That is why the self-test comes first -- with rule
+    correctness already established at zero false alarms on ground truth, a false alarm
+    here has one remaining explanation, and it is the extractor.
+    """
+    config = config_mod.load(args.config)
+    validators = build_all(config)
+    corpus_root = args.corpus or CORPUS_ROOT
+
+    truth = {}
+    for stem, records in load_corpus(corpus_root, args.only).items():
+        doctype = doctypes.for_label_file(stem)
+        if doctype is None:
+            continue
+        for record in records:
+            truth[record["file"].replace("\\", "/")] = (doctype, record)
+
+    score = ValidationScore()
+    findings, unmatched = [], 0
+    with open(args.predictions, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            predicted = json.loads(line)
+            key = str(predicted.get("file", "")).replace("\\", "/")
+            if key not in truth:
+                unmatched += 1
+                continue
+            doctype, actual = truth[key]
+            report = run_validators(validators, predicted, doctype,
+                                    doctype.variant_of(actual))
+            injected = set(actual.get("irregularities") or [])
+            errors = {f.code for f in report.findings if f.severity == "error"}
+            score.add(report.codes, injected, is_clean=not injected, errors=errors)
+            if report.findings:
+                findings.append({"file": key, "injected": sorted(injected),
+                                 **report.to_dict()})
+
+    print(f"validators: {', '.join(v.name for v in validators)}")
+    print(render(score, against=f"extracted output ({os.path.basename(args.predictions)})"))
+    if unmatched:
+        print(f"\n  {unmatched} predictions matched no corpus document")
+    if args.out:
+        os.makedirs(REPORTS_DIR, exist_ok=True)
+        path = os.path.join(REPORTS_DIR, os.path.basename(args.out))
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump({"predictions": args.predictions, "score": score.to_dict(),
+                       "findings": findings}, handle, indent=1)
+        print(f"\n  wrote {path}")
+    return 0
+
+
 def selftest(args) -> int:
     config = config_mod.load(args.config)
     validators = build_all(config)
@@ -88,6 +144,13 @@ def main(argv=None) -> int:
     st.add_argument("--out", default="")
     st.add_argument("--config", default="")
 
+    rp = sub.add_parser("run", help="run the rules against extracted output")
+    rp.add_argument("--predictions", required=True)
+    rp.add_argument("--corpus", default="")
+    rp.add_argument("--only", default="")
+    rp.add_argument("--out", default="")
+    rp.add_argument("--config", default="")
+
     ls = sub.add_parser("rules", help="show every validator")
     ls.add_argument("--config", default="")
 
@@ -97,6 +160,8 @@ def main(argv=None) -> int:
 
     if args.command == "selftest":
         return selftest(args)
+    if args.command == "run":
+        return run_predictions(args)
     if args.command == "rules":
         for name, cls in sorted(VALIDATORS.items()):
             print(f"  {name:<16}{cls.__doc__.splitlines()[0] if cls.__doc__ else ''}")

@@ -39,10 +39,13 @@ REQUIRED = {
 # Forms differ by variant: a W-9 has no bank account to be missing, and demanding one
 # would fire on every clean W-9 in the corpus.
 REQUIRED_FORM = {
-    "": {"signature": "missing_signature", "sign_date": "missing_sign_date"},
+    # `signature` and `sign_date` are printed on the page but live in the generator's
+    # render metadata rather than its labels, so no ground truth records them and the
+    # schema does not ask for them. 89 injected defects nothing downstream can see --
+    # a disagreement between the defect catalogue and the type registry, not a rule
+    # left unwritten. Adding them is a corpus change and is noted rather than faked.
     "onboarding": {"bank_account": "missing_bank_account"},
-    "claim": {"adjuster": "missing_adjuster"},
-    "w9": {"tin": "missing_tin"},
+    "claim": {"adjuster_name": "missing_adjuster"},
 }
 
 # Fields whose emptiness the corpus records under a name of its own rather than as a
@@ -110,6 +113,16 @@ class Required(Validator):
                     code=code, field=name,
                     message=f"{name.replace('_', ' ')} is empty",
                     actual=""))
+
+        # A W-9 carries its taxpayer number in one of two fields depending on which
+        # kind it is, so "the TIN is missing" is not a check on any single field. Both
+        # empty is the defect; either one filled is a complete answer.
+        if (doctype.name == "form" and variant == "w9"
+                and "ssn" in record and "ein" in record
+                and _absent(record.get("ssn")) and _absent(record.get("ein"))):
+            out.append(Finding(
+                code="missing_tin", field="ssn",
+                message="no taxpayer identification number, as SSN or EIN"))
 
         if doctype.name == "resume" and isinstance(record.get("skills"), list) \
                 and not record["skills"]:
