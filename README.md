@@ -460,6 +460,35 @@ this section originally claimed.
 `by_type` stays in the codebase. It is the right shape wherever multi-page documents
 are common — which this corpus is not — and running it is what produced the comparison.
 
+### What classification costs the stage after it
+
+The phase's own deliverable. Extraction over the same 175 documents, the same model and
+prompts, one thing varying — where the document type came from:
+
+| type from | field accuracy | exact match |
+|---|---|---|
+| the corpus | `0.959` | `0.809` |
+| **the pipeline** | **`0.957`** | **`0.809`** |
+
+Two thousandths across 1,904 graded fields, and exact match identical. The classifier
+placed all 175 correctly — type *and* variant — so the extractor received the same
+schema either way, and what is left is run-to-run model variance rather than
+classification error.
+
+So removing the corpus's answer key costs essentially nothing on clean documents, which
+is the claim Phase 3 was built to test. Every extraction number before this one,
+including Phase 1's, was produced with the corpus handing over the type.
+
+Read it as production conditions on page designs the classifier has trained on. The
+number that predicts a vendor template nobody has seen is the design-holdout `0.944`
+above, not this one.
+
+Visible in the same run and unrelated to classification: resumes score `0.820` against
+`0.97` or better everywhere else, and `target_role` reaches `0.086` with 19 of 35
+missing. The validators in Phase 4 land on the same documents from a different
+direction — null employment years on every role — which is two instruments agreeing
+about where the extractor is weakest.
+
 ### What this phase did not close
 
 **Two form variants are still confused**, one document each: `loan` read as
@@ -472,6 +501,16 @@ The one architecture comparison that has been run since the rebuild used clean
 documents only — 36 of them, four per class — which establishes the mechanism and ranks
 nothing. Whether a words-and-boxes model holds up on faxes, where docTR loses 38% of
 the words, is the open question.
+
+**Fields are not scored end to end through the splitter.** The chain runs — bundle to
+split to classify to extract, with nothing handed the corpus's answers — but the
+splitter is scored on boundaries and the extractor on documents, never on what comes
+out of the far end of both. That needs a metric that aligns predicted pieces to true
+documents and grades fields across the mismatch, and it is where the half-a-multi-bill
+finding would appear as a number rather than as an anecdote.
+
+**Bundles are built from clean documents only.** A real scanner batch is degraded, and
+this corpus cannot yet ask whether splitting survives a fax.
 
 ## Why the corpus comes first
 
