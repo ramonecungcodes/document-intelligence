@@ -66,11 +66,16 @@ class Cascade:
                 help="top-two pairs that always escalate, as 'a|b, c|d'"),
         Setting("abstain_below", float, default=0.0,
                 help="say nothing when even the resolved answer is under this"),
+        Setting("normalizer", str, default="",
+                help="how the secondary gets text; blank follows the manifest. The "
+                     "runner passes its own choice here, so --normalizer means the "
+                     "same thing to this stage as it does to every other one."),
     )
 
     def __init__(self, primary: str = "dit", secondary: str = "keyword",
                  escalate_below: float = 0.9, ambiguous: str = DEFAULT_PAIRS,
-                 abstain_below: float = 0.0, **_):
+                 abstain_below: float = 0.0, normalizer: str = "", **_):
+        self.normalizer_name = normalizer
         self.primary_name, self.secondary_name = primary, secondary
         self.escalate_below = escalate_below
         self.pairs = _parse_pairs(ambiguous)
@@ -123,11 +128,14 @@ class Cascade:
             from core import config as config_mod
             from normalize.base import NORMALIZERS, build as build_normalizer
             config = self._config or config_mod.load()
-            chosen = (config.chosen("normalizer") or "native").strip().lower()
+            chosen = (config.chosen("normalizer", self.normalizer_name)
+                      or "native").strip().lower()
             declares = {s.name for s in NORMALIZERS.get(
                 chosen, type("x", (), {"SETTINGS": ()})).SETTINGS}
             overrides = {"corpus": corpus} if corpus and "corpus" in declares else None
-            self._normalizer = build_normalizer(config=config, overrides=overrides)
+            self._normalizer = build_normalizer(config=config,
+                                                plugin=self.normalizer_name,
+                                                overrides=overrides)
         return self._normalizer.read(path)
 
     def _should_escalate(self, result: Classification) -> str:

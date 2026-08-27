@@ -98,7 +98,8 @@ def collect(corpus_root, only, limit):
     return jobs, unknown
 
 
-def predict_types(jobs, corpus_root, config, plugin, concurrency):
+def predict_types(jobs, corpus_root, config, plugin, concurrency,
+                  normalizer_name: str = ""):
     """Ask the classifier what each document is, instead of reading it off the corpus.
 
     This is the whole of Phase 3's claim. Every extraction number before it -- 0.986
@@ -114,7 +115,12 @@ def predict_types(jobs, corpus_root, config, plugin, concurrency):
     from classify.base import build as build_classifier
     from concurrent.futures import ThreadPoolExecutor
 
-    classifier = build_classifier(config=config, plugin=plugin)
+    # The runner's --normalizer has to reach a composite classifier too, or a cascade
+    # will quietly build the manifest's engine while the extractor uses the one that
+    # was asked for -- two different readings of the same page in one run.
+    classifier = build_classifier(config=config, plugin=plugin,
+                                  overrides={"normalizer": normalizer_name}
+                                  if normalizer_name else None)
     normalizer = None
     if getattr(classifier, "NEEDS_TEXT", True):
         from normalize.base import NORMALIZERS, build as build_normalizer
@@ -204,7 +210,7 @@ def run(args):
     if args.type_from == "classifier":
         config = config_mod.load(args.config)
         jobs, abstained = predict_types(jobs, corpus_root, config, args.classifier,
-                                        args.concurrency)
+                                        args.concurrency, args.normalizer)
         if not jobs:
             raise SystemExit("the classifier declined every document")
 
