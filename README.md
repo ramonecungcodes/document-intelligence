@@ -68,7 +68,7 @@ finishing it is knowing whether to continue.
 | **1** | Can a model read fields off a document it has never seen? Text layer only, type given, one call, no tools, no repair. | a field-accuracy number | done |
 | **2** | Can it read documents that are not clean? The normalizer becomes its own stage: degraded scans carry no text layer, so this is where OCR or a vision path has to earn its place. | degraded accuracy against clean | done |
 | **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | done |
-| **4** | Can it tell when it is wrong? Validators: arithmetic that must foot, dates that must parse, cross-field constraints that must hold. | defect precision and recall | |
+| **4** | Can it tell when it is wrong? Validators: arithmetic that must foot, dates that must parse, cross-field constraints that must hold. | defect precision and recall | done |
 | **5** | Is its confidence real? Calibration from independent signals rather than model self-report, and routing what fails to a person. | a calibration curve | |
 | **6** | Can it repair itself? The bounded repair loop and tool-using extraction — the agentic pockets, arriving last because everything before them is what makes them measurable. | repair success rate | |
 | **7** | Does teaching it work? Teach mode and the run queue as one screen, with the knowledge pack accumulating corrections, layout profiles and learned validators. | a learning curve | |
@@ -97,6 +97,7 @@ core/                       shared domain code: field normalisation, type regist
 normalize/                  the OCR stage: native text, tesseract, docTR, cascade
 classify/                   the classifier stage: keyword baseline, llm, layout, dit, cascade
 split/                      the splitter stage: single, every_page, by_type
+validate/                   the validator stage: arithmetic, required, format, range, temporal
 extract/                    the extractor: document text -> schema-constrained fields
 eval/                       scoring, the report format, the CLI
 tests/                      unit tests, fixtured off the committed samples
@@ -511,6 +512,110 @@ finding would appear as a number rather than as an anecdote.
 
 **Bundles are built from clean documents only.** A real scanner batch is degraded, and
 this corpus cannot yet ask whether splitting survives a fax.
+
+## Phase 4: telling when it is wrong
+
+The corpus has carried the ground truth for this since Phase 0 — 352 documents with 527
+deliberately injected defects across 38 classes — so the stage can be scored rather than
+admired.
+
+The structural problem is that a validator runs on *extracted* output. When a rule
+fires there are two explanations and they want opposite responses: the document is
+defective, or the extractor misread a good one. Nothing in the firing tells them apart,
+and a stage that cannot separate them reports a defect rate that is partly its own
+extraction error and moves when the model changes.
+
+So every rule is scored twice, and the first run is a gate rather than a result.
+
+| scored against | precision | recall | document recall |
+|---|---|---|---|
+| the corpus labels — *does the rule work* | `0.911` | `0.918` | `0.974` |
+| extracted output — *does the pipeline work* | `0.701` | `0.564` | `0.777` |
+
+On ground truth there is no extractor to blame, so a rule that fires on a clean document
+is simply wrong. That has to read zero before a rule ships — the same bar Phase 0 set by
+demanding `score --predictions self` return exactly `1.000`. It does, so the gap between
+those two rows has one attributable cause, and it is not the rules.
+
+### What the gap is made of
+
+`missing_bill_to` at `0.000`, `missing_vendor` at `0.154`, `missing_invoice_number` at
+`0.455` — the extractor supplies a value the document does not have. That is Phase 1's
+fabrication failure, still alive on every field nobody thought to mark optional, and the
+validators find it without a label in sight.
+
+`no_skills_listed` at `0.000` and both employment-date classes are resumes — the third
+independent instrument to land on resumes, after the extraction score of `0.820` and the
+`target_role` field at `0.086`.
+
+**A validator firing because the extractor invented a value is not a false alarm. It is
+a bug report.** That is the argument for the two-stage scoring, and it is why the
+clean-corpus run matters: 24 of 175 documents with no injected defects were flagged, and
+every one was a real extraction error — including a resume whose work history the labels
+give as 2022 and 2021 and the extractor returned as null on every role.
+
+### Two rules the self-test caught, and three fields that did not exist
+
+`overlapping_service_periods` fired on 40 clean documents before it ever saw a
+prediction. Services on one bill are normally billed over the same month, so overlap is
+not a defect at all; what the generator injects is one section's period copied verbatim
+onto another. Reading the injector rather than tuning the threshold took 40 false alarms
+to 2 — and those last 2 are chance collisions on clean documents, so the rule is a
+warning now. The self-test counts only errors: a rule that cannot be certain should not
+be able to fail a build.
+
+Three rules checked fields the schema does not have, and each failed the same silent
+way — no field found, nothing compared, a clean `0.000` indistinguishable from the
+defect being absent. Employment dates are `start_year`, not `start_date`. The claim
+adjuster is `adjuster_name`. A W-9's TIN is `ssn` **or** `ein` depending on `tin_type`,
+so it is not a check on any single field. A test now asserts every required field name
+exists on the variant it is demanded of.
+
+The largest class was worse than a wrong name: the signature block is printed on every
+form and was recorded on none of them, living in the generator's render metadata rather
+than its labels. 89 defects — the two biggest classes — with no ground truth to compare
+against and no schema field to arrive in. Recording them moved document recall from
+`0.883` to `0.974`.
+
+### What this phase has not closed
+
+`tax_miscalculated` is undecidable from the page: a tampered tax and a tampered total
+both present as `subtotal + tax != total`, and nothing printed says which. Those
+documents are still caught, under `total_mismatch` — which is why its precision reads
+`0.345` while document recall holds. Wherever the corpus tags a cause the page cannot
+distinguish, per-code recall understates the stage.
+
+### What a validator is really measuring on a bad scan
+
+The degraded set is derived from the clean corpus, so it carries no injected defects at
+all. Every finding on it is a false alarm by construction, and the rate is the answer to
+how fast extraction error turns into phantom defects:
+
+| profile | documents | flagged | false-alarm rate |
+|---|---|---|---|
+| clean | 175 | 24 | `0.137` |
+| light | 76 | 10 | `0.132` |
+| photo | 51 | 12 | `0.235` |
+| **fax** | **48** | **36** | **`0.750`** |
+
+Three out of four clean faxes are reported as defective. The rules did not change and
+the self-test still says they are correct — on a fax they are measuring OCR quality
+wearing a validator's name. The codes confirm it: `line_item_math_error` ×29 and
+`section_line_item_math_error` ×25, which is what happens when digits are misread and
+the arithmetic stops footing.
+
+Light degradation costs nothing at all — `0.132` against clean's `0.137`. The damage is
+not gradual; it arrives with the fax.
+
+This lands squarely on Phase 5. **You cannot route on validator findings for fax
+documents**: doing so sends three quarters of the good ones to a person. A defect
+signal is only actionable where the extraction under it is trustworthy, which is the
+same shape as Phase 2's lesson about confidence — a signal is useful only where it is
+calibrated, and the place you most want to trust it is the place least likely to
+deserve it.
+
+**Nothing routes on a finding.** `Report.ok` exists and no stage consumes it. Confidence
+and routing are Phase 5, and smearing them into Phase 4 would make both unmeasurable.
 
 ## Why the corpus comes first
 

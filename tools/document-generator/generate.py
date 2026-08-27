@@ -779,6 +779,13 @@ def main():
         open(os.path.join(OUT,"source_html/forms",fn+".html"),"w",encoding="utf-8").write(doc)
         rec=dict(file=f"forms/{fn}.pdf", doc_type="form", form_type=kind, layout=variant)
         rec.update({k:v for k,v in L.items() if k!="form_type"})
+        # The signature block is printed on every form and was recorded on none of
+        # them, because it lived in the render metadata rather than the labels. That
+        # made missing_signature and missing_sign_date -- 89 injected defects, the two
+        # largest classes in the catalogue -- invisible to any validator: no ground
+        # truth to compare against and no schema field to extract into.
+        rec["signature"]=meta.get("signature","")
+        rec["sign_date"]=meta.get("sign_date","")
         rec["irregularities"]=irr
         form_labels.append(rec)
 

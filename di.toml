@@ -27,6 +27,12 @@ extractor = "openai"
 # page render rather than an OCR pass.
 classifier = "cascade"
 
+# Every rule, which is the default when this is blank. A rule ships only after the
+# self-test shows it firing on no clean document, so there is no reason to run a
+# subset; naming them here is for turning one off deliberately, and for seeing at a
+# glance what checks a number was produced under.
+validator = "arithmetic, format, range, required, temporal"
+
 # ------------------------------------------------------------------ splitters
 # Measured on 120 bundles holding 333 documents. The classifier-per-page splitter,
 # which cuts where the predicted type changes, lost to cutting everywhere:
@@ -67,6 +73,16 @@ abstain_below = 0.9
 [classifiers.llm]
 # Text only. 0.990 on clean documents and 0.571 on faxes -- the gap is OCR, not
 # comprehension.
+
+# ------------------------------------------------------------------ validators
+
+[validators.arithmetic]
+# Cents of slack. Not zero: every figure on these documents is printed rounded to the
+# cent, so a subtotal recomputed from rounded line amounts disagrees by fractions
+# legitimately, and a rule with no tolerance reports a defect rate that is mostly
+# rounding. Wide enough to absorb that and nothing else -- the injected mismatches run
+# from 8 to 260 dollars, so there is a lot of daylight between the two.
+tolerance = 0.02
 
 # ------------------------------------------------------------------ extractors
 

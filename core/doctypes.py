@@ -314,7 +314,19 @@ _LOAN = (
 FORM = DocType(
     name="form",
     label_file="forms",
-    fields=(Field("form_type", "enum"),),
+    # Shared by every variant: each of these forms ends in a signature block, and
+    # whether it was signed is the single most common defect in the corpus. The block
+    # was printed on the page and recorded nowhere, so no validator could reach it --
+    # 89 injected defects invisible for want of two fields.
+    fields=(
+        Field("form_type", "enum"),
+        Field("signature", "name",
+              help="the name written on the signature line at the end of the form. "
+                   "Empty when the form was left unsigned."),
+        Field("sign_date", "date",
+              help="the date written beside the signature, not any other date on the "
+                   "form"),
+    ),
     variant_key="form_type",
     variants={
         "onboarding": _ONBOARDING,

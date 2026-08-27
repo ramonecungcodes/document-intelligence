@@ -191,6 +191,59 @@ def predict_types(jobs, corpus_root, config, plugin, concurrency,
     return predicted, abstained
 
 
+def _validate_output(out_path: str, corpus_root: str, config_path: str) -> None:
+    """Check what was just extracted, and say so beside it.
+
+    Findings go in a sidecar rather than into the predictions. A prediction file is the
+    extractor's answer and nothing else; mixing a second stage's opinion into it would
+    make the two impossible to diff separately, and the scorer would be reading a file
+    that two stages had written.
+
+    A false alarm here means something specific, and only because the validators are
+    gated on ground truth first: with rule correctness already established, a rule that
+    fires on a document the corpus calls clean is the extractor being wrong. That makes
+    this a defect report and an extraction-error detector at once.
+    """
+    from core import config as config_mod
+    from validate.base import build_all, run as run_validators
+
+    validators = build_all(config_mod.load(config_path))
+    truth = {}
+    for stem, records in load_corpus(corpus_root, None).items():
+        doctype = doctypes.for_label_file(stem)
+        if doctype is None:
+            continue
+        for record in records:
+            truth[record["file"].replace("\\", "/")] = (doctype, record)
+
+    findings, flagged, checked = [], 0, 0
+    with open(out_path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            predicted = json.loads(line)
+            key = str(predicted.get("file", "")).replace("\\", "/")
+            doctype, actual = truth.get(key, (None, None))
+            if doctype is None:
+                continue
+            checked += 1
+            report = run_validators(validators, predicted, doctype,
+                                    doctype.variant_of(actual))
+            if report.findings:
+                flagged += 1
+                findings.append({"file": key, **report.to_dict()})
+
+    path = os.path.splitext(out_path)[0] + ".validation.json"
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump({"validators": [v.name for v in validators],
+                   "documents": checked, "flagged": flagged,
+                   "findings": findings}, handle, indent=1)
+    total = sum(len(f["findings"]) for f in findings)
+    print(f"\nvalidators flagged {flagged}/{checked} documents ({total} findings)")
+    print(f"      {path}")
+
+
 def _cause(error: str) -> str:
     """The shape of a failure, with the document-specific detail stripped off.
 
@@ -378,6 +431,9 @@ def run(args):
             pass
 
     stream.close()
+
+    if getattr(args, "validate", False):
+        _validate_output(out_path, corpus_root, args.config)
 
     run_path = os.path.splitext(out_path)[0] + ".run.json"
     with open(run_path, "w", encoding="utf-8", newline="\n") as handle:
@@ -571,6 +627,9 @@ def main(argv=None):
                          "pipeline works it out, which is what production does.")
     go.add_argument("--classifier", default="",
                     help="which classifier plugin, when --type-from classifier")
+    go.add_argument("--validate", action="store_true",
+                    help="run the validators over what was extracted and write the "
+                         "findings beside the predictions")
     go.add_argument("--manifest", default="",
                     help="extract the documents a splitter found (split.cli apply) "
                          "instead of the documents the corpus declares")
