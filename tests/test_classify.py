@@ -13,7 +13,7 @@ from eval.classification import ClassificationScore
 
 class TestRegistry:
     def test_both_classifiers_register(self):
-        assert {"keyword", "llm"} <= set(CLASSIFIERS)
+        assert {"cascade", "dit", "keyword", "layout", "llm"} <= set(CLASSIFIERS)
 
     def test_each_declares_its_settings(self):
         for name, cls in CLASSIFIERS.items():
@@ -26,6 +26,72 @@ class TestRegistry:
         from core.doctypes import REGISTRY
         allowed = LLMClassifier().schema()["properties"]["doc_type"]["enum"]
         assert set(allowed) == set(REGISTRY) | {"unknown"}
+
+
+class TestCascade:
+    """The tie-breaker. Its whole value is being narrow, so that is what is pinned."""
+
+    def build(self, **kw):
+        from core import config as config_mod
+        from classify.cascade import Cascade
+        c = Cascade(**kw)
+        c.bind(config_mod.load())
+        return c
+
+    def stub(self, doc_type, runner_up="", variant="", confidence=0.99):
+        from classify.base import Classification
+
+        class Stub:
+            NEEDS_TEXT = False
+            SETTINGS = ()
+
+            def classify(self, text="", **_):
+                return Classification(doc_type=doc_type, variant=variant,
+                                      runner_up=runner_up, confidence=confidence)
+        return Stub()
+
+    def test_it_does_not_escalate_when_the_pair_is_not_in_play(self):
+        c = self.build(escalate_below=0.0)
+        c._primary = self.stub("resume", runner_up="form")
+        c._secondary = self.stub("invoice")
+        assert c.classify(path="x.pdf").doc_type == "resume"
+
+    def test_it_escalates_when_the_top_two_are_the_confusable_pair(self):
+        c = self.build(escalate_below=0.0)
+        c._primary = self.stub("invoice", runner_up="purchase_order")
+        c._secondary = self.stub("purchase_order")
+        assert c.classify(path="x.pdf").doc_type == "purchase_order"
+
+    def test_the_secondary_may_not_introduce_a_third_type(self):
+        """It is consulted to settle two candidates, not to reopen the question."""
+        c = self.build(escalate_below=0.0)
+        c._primary = self.stub("invoice", runner_up="purchase_order")
+        c._secondary = self.stub("resume")
+        assert c.classify(path="x.pdf").doc_type == "invoice"
+
+    def test_a_coarser_answer_does_not_cost_the_variant(self):
+        """The keyword baseline has no notion of form variants. Letting its bare
+        `form` win stripped four documents of the field set that selects 22 fields
+        rather than 9."""
+        c = self.build(escalate_below=1.0)
+        c._primary = self.stub("form", runner_up="invoice", variant="w9",
+                               confidence=0.4)
+        c._secondary = self.stub("form")
+        result = c.classify(path="x.pdf")
+        assert (result.doc_type, result.variant) == ("form", "w9")
+
+    def test_a_failed_escalation_keeps_the_first_answer(self):
+        """The second opinion is an improvement, not a dependency."""
+        class Broken:
+            NEEDS_TEXT = False
+            SETTINGS = ()
+
+            def classify(self, *a, **k):
+                raise RuntimeError("ocr fell over")
+        c = self.build(escalate_below=0.0)
+        c._primary = self.stub("invoice", runner_up="purchase_order")
+        c._secondary = Broken()
+        assert c.classify(path="x.pdf").doc_type == "invoice"
 
 
 class TestKeywordBaseline:

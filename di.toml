@@ -24,7 +24,7 @@ extractor = "openai"
 #
 # It also reads no text at all, so this stage runs before the normalizer and costs a
 # page render rather than an OCR pass.
-classifier = "dit"
+classifier = "cascade"
 
 # ------------------------------------------------------------------ classifiers
 
@@ -91,3 +91,19 @@ api_key = "${ANTHROPIC_API_KEY}"
 [rules]
 drop_rollup_rows = true
 drop_empty_rows = true
+
+[classifiers.cascade]
+# DiT reads the page and is right about almost everything except purchase orders,
+# which it calls invoices on designs it has not seen: 0.125 recall, 14 of 16. The two
+# are both a header, a ruled table and a totals block, and what separates them is a
+# phrase printed at the top. So the text is consulted for that pair and for anything
+# DiT is unsure of, and nothing else -- which keeps the OCR bill on the minority of
+# documents that need it rather than the whole corpus.
+primary = "dit"
+secondary = "keyword"
+ambiguous = "invoice|purchase_order"
+# Zero, not 0.9. Measured on unseen page designs: the pair trigger alone scores 0.944
+# and escalates 22% of documents; adding a 0.9 confidence floor escalates 56% and
+# scores exactly the same 0.944. The extra escalations were all documents the image
+# model was going to get right anyway, and each one is an OCR pass.
+escalate_below = 0.0

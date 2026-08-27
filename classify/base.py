@@ -116,4 +116,10 @@ def build(config=None, plugin: str = "", overrides=None):
         settings = config.settings("classifier", chosen, cls.SETTINGS, overrides)
     except SettingsError as error:
         raise SystemExit(f"configuration error: {error}")
-    return cls(**settings)
+    built = cls(**settings)
+    # A composite has to build its own members, and they are configured in the same
+    # manifest. Handing it the config here keeps that in one place rather than having
+    # it reload and possibly disagree about which file it read.
+    if hasattr(built, "bind"):
+        built.bind(config)
+    return built

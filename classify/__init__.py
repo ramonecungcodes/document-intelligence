@@ -9,6 +9,7 @@ folder of scanned paperwork does not come labelled.
     llm         ask a model, constrained to the registry's types.
     layout      LayoutLM over words, word boxes and the page image.
     dit         the page image alone -- no words, no OCR, no normalizer.
+    cascade     dit first, and the text consulted only where dit is known to struggle.
 
 The last one is why `classify` takes more than a string. A text classifier reads what
 the words say; a layout one also reads where they are, and on a fax that is most of
@@ -25,6 +26,6 @@ mislabel a document, it asks the model for fields the document does not have. Th
 coupling is exactly what Phase 3 exists to measure.
 """
 from classify.base import Classification, CLASSIFIERS, build  # noqa: F401
-from classify import dit, keyword, layout, llm  # noqa: F401  (registration side effect)
+from classify import cascade, dit, keyword, layout, llm  # noqa: F401  (registration side effect)
 
 __all__ = ["Classification", "CLASSIFIERS", "build"]

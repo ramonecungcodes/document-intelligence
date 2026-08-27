@@ -76,12 +76,18 @@ class TestRegistration:
         from classify.base import CLASSIFIERS
         assert {"dit", "layout"} <= set(CLASSIFIERS)
 
-    def test_only_dit_declines_to_read_text(self):
+    def test_only_the_page_readers_decline_text(self):
         """NEEDS_TEXT is what lets the runner skip OCR, which is the expensive stage.
-        A text classifier that inherited False would be handed an empty string."""
+        A text classifier that inherited False would be handed an empty string.
+
+        The cascade declares False and means something subtler: it reads no text for
+        most documents and normalizes the few it escalates, itself. Declaring True
+        would hand the runner an OCR bill for the whole corpus to serve a fifth of it.
+        """
         from classify.base import CLASSIFIERS
         reads = {n: getattr(c, "NEEDS_TEXT", True) for n, c in CLASSIFIERS.items()}
-        assert reads == {"dit": False, "layout": True, "keyword": True, "llm": True}
+        assert reads == {"cascade": False, "dit": False, "layout": True,
+                         "keyword": True, "llm": True}
 
     def test_the_defaults_name_the_checkpoints_that_were_measured(self):
         """Both plugins pointed at an unweighted model at one stage. The unweighted
