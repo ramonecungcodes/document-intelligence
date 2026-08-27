@@ -68,7 +68,7 @@ finishing it is knowing whether to continue.
 | **1** | Can a model read fields off a document it has never seen? Text layer only, type given, one call, no tools, no repair. | a field-accuracy number | done |
 | **2** | Can it read documents that are not clean? The normalizer becomes its own stage: degraded scans carry no text layer, so this is where OCR or a vision path has to earn its place. | degraded accuracy against clean | done |
 | **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | done |
-| **4** | Can it tell when it is wrong? Validators: arithmetic that must foot, dates that must parse, cross-field constraints that must hold. | defect precision and recall | rules done; degraded not yet measured |
+| **4** | Can it tell when it is wrong? Validators: arithmetic that must foot, dates that must parse, cross-field constraints that must hold. | defect precision and recall | done |
 | **5** | Is its confidence real? Calibration from independent signals rather than model self-report, and routing what fails to a person. | a calibration curve | |
 | **6** | Can it repair itself? The bounded repair loop and tool-using extraction — the agentic pockets, arriving last because everything before them is what makes them measurable. | repair success rate | |
 | **7** | Does teaching it work? Teach mode and the run queue as one screen, with the knowledge pack accumulating corrections, layout profiles and learned validators. | a learning curve | |
@@ -585,9 +585,34 @@ documents are still caught, under `total_mismatch` — which is why its precisio
 `0.345` while document recall holds. Wherever the corpus tags a cause the page cannot
 distinguish, per-code recall understates the stage.
 
-**Degraded documents are not measured yet.** On clean text a false alarm is the rule's
-fault and there are none; on a fax it is the extractor's, and how fast that grows with
-degradation is the question the whole gated design exists to make answerable.
+### What a validator is really measuring on a bad scan
+
+The degraded set is derived from the clean corpus, so it carries no injected defects at
+all. Every finding on it is a false alarm by construction, and the rate is the answer to
+how fast extraction error turns into phantom defects:
+
+| profile | documents | flagged | false-alarm rate |
+|---|---|---|---|
+| clean | 175 | 24 | `0.137` |
+| light | 76 | 10 | `0.132` |
+| photo | 51 | 12 | `0.235` |
+| **fax** | **48** | **36** | **`0.750`** |
+
+Three out of four clean faxes are reported as defective. The rules did not change and
+the self-test still says they are correct — on a fax they are measuring OCR quality
+wearing a validator's name. The codes confirm it: `line_item_math_error` ×29 and
+`section_line_item_math_error` ×25, which is what happens when digits are misread and
+the arithmetic stops footing.
+
+Light degradation costs nothing at all — `0.132` against clean's `0.137`. The damage is
+not gradual; it arrives with the fax.
+
+This lands squarely on Phase 5. **You cannot route on validator findings for fax
+documents**: doing so sends three quarters of the good ones to a person. A defect
+signal is only actionable where the extraction under it is trustworthy, which is the
+same shape as Phase 2's lesson about confidence — a signal is useful only where it is
+calibrated, and the place you most want to trust it is the place least likely to
+deserve it.
 
 **Nothing routes on a finding.** `Report.ok` exists and no stage consumes it. Confidence
 and routing are Phase 5, and smearing them into Phase 4 would make both unmeasurable.
