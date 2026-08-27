@@ -315,6 +315,10 @@ def main(argv=None) -> int:
     parser.add_argument("--limit", type=int, default=0, help="smoke test on a subset")
     parser.add_argument("--balance", action="store_true",
                         help="weight the loss by inverse class frequency")
+    parser.add_argument("--profiles", default="",
+                        help="restrict to these profiles, e.g. 'clean'. Clean documents "
+                             "carry an exact text layer, so a words-and-boxes model can "
+                             "be measured on them without an OCR pass at all.")
     parser.add_argument("--test-per-label", type=int, default=4,
                         help="source documents reserved per label (holdout=source)")
     parser.add_argument("--unbalanced-test", action="store_true",
@@ -358,6 +362,11 @@ def main(argv=None) -> int:
     else:
         def is_test(item):
             return item["source"] in test_sources
+
+    if args.profiles:
+        want = {p.strip() for p in args.profiles.split(",") if p.strip()}
+        items = [i for i in items if i["profile"] in want]
+        print(f"  restricted to profiles: {', '.join(sorted(want))}")
 
     train_items = [i for i in items if not is_test(i)]
     test_items = [i for i in items if is_test(i)]
