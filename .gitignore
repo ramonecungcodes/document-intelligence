@@ -24,3 +24,7 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Fine-tuned checkpoints. Hundreds of megabytes each, and reproducible from
+# tools/train-layout-classifier.py with the seed it defaults to.
+/models/

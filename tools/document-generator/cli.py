@@ -7,6 +7,8 @@ script names or the directory conventions.
     generate [flags]    synthetic HTML + ground-truth labels        -> $DI_DATASET_ROOT
     render   [flags]    HTML -> PDF via headless Chromium
     degrade  [flags]    PDF -> image-only scans/photos (no text layer)
+    bundle   [flags]    several documents concatenated into one PDF, as a scanner
+                        batch arrives, with the page each one starts on recorded
     build    [flags]    the whole thing: clean set + defective set, rendered
                         (add --degrade to also write the scanned variants)
 
@@ -21,7 +23,8 @@ import os, sys, subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.environ.get("DI_DATASET_ROOT") or os.path.abspath(os.path.join(HERE, ".."))
-SCRIPTS = {"generate": "generate.py", "render": "render_pdfs.py", "degrade": "degrade.py"}
+SCRIPTS = {"generate": "generate.py", "render": "render_pdfs.py",
+           "degrade": "degrade.py", "bundle": "bundle.py"}
 
 
 def run(stage, args):

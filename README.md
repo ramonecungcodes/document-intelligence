@@ -66,8 +66,8 @@ finishing it is knowing whether to continue.
 |---|---|---|---|
 | **0** | Can any of this be measured? Corpus plus scoring harness, anchored by a self-test that must score exactly `1.000` and an empty-extractor baseline. | a scorer worth trusting | done |
 | **1** | Can a model read fields off a document it has never seen? Text layer only, type given, one call, no tools, no repair. | a field-accuracy number | done |
-| **2** | Can it read documents that are not clean? The normalizer becomes its own stage: degraded scans carry no text layer, so this is where OCR or a vision path has to earn its place. | degraded accuracy against clean | next |
-| **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | |
+| **2** | Can it read documents that are not clean? The normalizer becomes its own stage: degraded scans carry no text layer, so this is where OCR or a vision path has to earn its place. | degraded accuracy against clean | done |
+| **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | done |
 | **4** | Can it tell when it is wrong? Validators: arithmetic that must foot, dates that must parse, cross-field constraints that must hold. | defect precision and recall | |
 | **5** | Is its confidence real? Calibration from independent signals rather than model self-report, and routing what fails to a person. | a calibration curve | |
 | **6** | Can it repair itself? The bounded repair loop and tool-using extraction — the agentic pockets, arriving last because everything before them is what makes them measurable. | repair success rate | |
@@ -94,13 +94,16 @@ read documents.
 
 ```
 core/                       shared domain code: field normalisation, type registry
-extract/                    the extractor: PDF text -> schema-constrained fields
+normalize/                  the OCR stage: native text, tesseract, docTR, cascade
+classify/                   the classifier stage: keyword baseline, llm, layout, dit, cascade
+split/                      the splitter stage: single, every_page, by_type
+extract/                    the extractor: document text -> schema-constrained fields
 eval/                       scoring, the report format, the CLI
 tests/                      unit tests, fixtured off the committed samples
 tools/document-generator/   synthetic evaluation corpus (Docker; see its README)
 data/                       generated corpus — gitignored, regenerable from a seed
 reports/                    score reports — gitignored
-docker-compose.yml          on-demand services: document-generator, evaluator
+docker-compose.yml          on-demand services: generator, normalizer, extractor, evaluator
 ```
 
 `core/normalize.py` holds the field comparison primitives — is `03/29/2026` the same
@@ -239,6 +242,276 @@ docker compose run --rm evaluator score --predictions /reports/mine.jsonl
 `score --predictions self` must return exactly `1.000`, and `--predictions empty` gives
 the do-nothing baseline. Anything you measure sits between those two.
 
+## Phase 2: reading documents that are not clean
+
+Phase 1 read the embedded text layer and nothing else, which is fine until a document
+arrives as a photograph of a crumpled page. The generator produces 1,056 degraded
+variants of the corpus at three levels -- a decent office scanner, a 170 dpi fax, and a
+phone snapshot with perspective distortion -- as image-only PDFs with no text layer at
+all.
+
+The honest starting number was not a low score. It was **no score**: the extractor read
+zero characters from every one of the 1,056 and reported them skipped. That is the gap
+OCR had to close, measured rather than assumed.
+
+### Which OCR engine, measured rather than argued
+
+The normalizer is a plugin slot with competing implementations, so the comparison is a
+manifest edit. Seventy-five degraded documents, stratified across every type and
+profile, same model and prompts throughout -- only the OCR engine varies:
+
+| profile | n | cascade | docTR | delta |
+|---|---|---|---|---|
+| light | 29 | `0.905` | **`0.921`** | +1.6 |
+| photo | 18 | `0.502` | **`0.817`** | **+31.5** |
+| fax | 28 | `0.292` | **`0.305`** | +1.3 |
+
+Against `0.986` on the same documents before they were degraded.
+
+**Light degradation is close to solved.** An office-scanner document costs about six
+points end to end, which is shippable.
+
+**Photographs are an OCR problem, not a model problem.** The same model on the same
+pages scores `0.502` or `0.817` depending purely on which engine produced the text.
+Nothing about the prompt or the schema moves that number; the perspective distortion
+and uneven lighting are recovered by docTR's detector and lost by Tesseract's.
+
+**Faxes are not recoverable.** `0.305`, and no prompting fixes characters OCR never
+produced. The right system response is confidence routing to a person, and knowing
+where that threshold sits is what this phase bought.
+
+### The optimisation that cost 31 points
+
+The cascade -- cheap engine first, escalate to the expensive one only where confidence
+is poor -- is a good pattern and was the wrong choice here.
+
+Its entire argument was cost, and the cost was not real. It averaged 3.6s a document
+against docTR's 4.0s, because on faxes it runs *both* engines. Seven minutes saved
+across the corpus, on a stage that is cached and paid once, against 7.4 hours of
+extraction. An optimisation worth 1.4% of the pipeline.
+
+Meanwhile it lost 31 points on photographs, and the reason is worth keeping. Tesseract
+reports around `0.88` mean word confidence on photo documents whose text then extracts
+at `0.191`. Its confidence is well calibrated on clean scans and badly calibrated on
+distorted ones -- so the escalation rule, which trusted that number, kept exactly the
+documents it should have escalated.
+
+**A confidence signal is only useful where it is calibrated, and the place you most
+want to trust it is the place least likely to be true.** That is the lesson, and it
+lands squarely on Phase 5.
+
+The cascade stays in the codebase as a plugin. It remains the right pattern where OCR
+is not cached -- per-request production traffic, CPU-only deployment, an engine billed
+per page -- and running both engines over the same documents is what produced the
+comparison above. It is simply not what this pipeline should default to.
+
+## Phase 3: working out what a document is
+
+Phases 1 and 2 were handed the document type by the corpus. That was deliberate —
+mixing extraction and classification would have made a bad number impossible to
+attribute to either — but it is not how the system ever runs. A folder of scanned
+paperwork does not come labelled.
+
+**Nine answers, not five.** `form` carries five variants whose field sets differ by
+more than a name — onboarding asks for 22 fields, w4 for 9 — and the extractor selects
+between them. A classifier that stops at `form` has answered half the question and left
+the rest to the corpus, which is the hand-over this phase exists to remove. The label
+set is generated from the type registry, so the classifier and the extractor cannot
+disagree about what the possible answers are.
+
+So the floor is `0.111`: nine balanced classes, always guessing one of them, having
+read nothing. Every number below is reported against that.
+
+### What a corpus rebuild cost, and why it was worth it
+
+An earlier version of this section reported `0.958` on faxes and concluded that the
+page image alone beat every model that also read the words. That result did not
+survive its own corpus.
+
+At the time, invoices and purchase orders had three page designs and two. Holding out
+a *document* could not distinguish a model that had learned what an invoice is from one
+that had memorised what this corpus's invoices look like — and the image model was
+doing the second. Rebuilding the corpus with ten designs each and holding out a whole
+*design* took the memorisation away:
+
+| held out by | overall | fax | purchase orders |
+|---|---|---|---|
+| source document | `0.958` | `0.917` | `0.938` |
+| **page design** | **`0.792`** | **`0.694`** | **`0.125`** |
+
+Fourteen of sixteen purchase orders read as invoices. Not a data shortage — nine PO
+designs were still in training — but a distinction the model never had to learn. An
+invoice and a purchase order are both a header, a ruled line-item table and a totals
+block; what separates them is a phrase printed at the top of the page. With two or
+three templates per type, memorising each template stood in for the concept and looked
+exactly like understanding.
+
+### The pipeline: read the page, ask about the words only where it matters
+
+Two models fail in different places rather than one being better. The image model is
+right about almost everything except that one pair; a model given the words resolves
+it outright. So the image model runs first and the text is consulted only where it is
+known to be needed.
+
+| unseen page designs, clean | image alone | cascade |
+|---|---|---|
+| purchase_order → invoice | 4 | **0** |
+| invoice → purchase_order | 2 | **0** |
+| **overall** | **`0.778`** | **`0.944`** |
+
+The order is the whole economy of it. The image model reads no text, so it costs a page
+render; the text path costs an OCR pass — hours over a thousand degraded documents.
+Escalating spends that on the 22% of documents that need it rather than all of them.
+
+The trigger is measured rather than chosen conservatively. The confusable-pair trigger
+alone scores `0.944` and escalates 22%; adding a `0.90` confidence floor escalates 56%
+and scores exactly `0.944`. Every extra escalation was a document the image model was
+going to get right anyway, and each one is an OCR pass.
+
+The keyword baseline is the secondary, and it is worth being clear about why that is
+not a contradiction of calling it a floor elsewhere. It scores `0.700` overall and
+`0.350` on multi-bill invoices, so it is no one's classifier. But asked a single
+question — is this page an invoice or a purchase order, given that something else has
+already narrowed it to those two — it is exact and free. A weak classifier can be a
+strong arbiter.
+
+### What the multi-bill invoice cost, and stopped costing
+
+Multi-bill against plain invoice dominated Phase 1 and held the keyword baseline to
+`0.350`. Across every run above it is now **zero confusions in either direction**. It
+differs from an invoice by carrying a repeated per-service block, and a model reading
+the page as a picture sees that structure instead of inferring it from vocabulary.
+
+The confusion that replaced it was invoice against purchase order — invisible while
+each type had two or three templates, and the worst class in the system once they had
+ten.
+
+### The fax gap is not comprehension
+
+The LLM loses 42 points between clean documents and faxes, and the cause is upstream of
+the model. docTR finds **62% of the words** on a 170 dpi bitonal page — the rest are not
+misread, they are never found. No amount of reading recovers a word that was never
+there.
+
+Geometry survives what glyphs do not, and that was checked before anything was trained.
+A coarse ink-occupancy grid — no words in it at all, just where marks sit on the page —
+nearest-neighboured against the clean corpus:
+
+| profile | word retention | layout fidelity | type accuracy from ink alone |
+|---|---|---|---|
+| light | `0.954` | `0.983` | `1.000` |
+| photo | `0.938` | `0.958` | `0.997` |
+| fax | `0.645` | `0.772` | `0.875` |
+
+A fax keeps two-thirds of its words and three-quarters of its layout, and position
+alone identifies the type better than the LLM reading the text does.
+
+### Abstention, and where it belongs now
+
+Every error the image model made on unseen-design faxes arrived below `0.90`
+confidence, and the documents it declined were the ones there was least to read on — a
+mean of 43 OCR words against 92.5 on the ones it answered. It abstains where the page
+has gone blank, which is the typed-decision discipline Phase 1 applied to fields,
+arriving one stage earlier.
+
+The cascade changes where that floor sits rather than whether it exists. A document
+whose top two answers are the confusable pair is no longer a candidate for abstention —
+it is a candidate for a second opinion, and the second opinion is exact. Abstention is
+for pages nobody can read, not for questions that are merely narrow.
+
+A document the pipeline declines is **not extracted and not graded**. Scoring an
+abstention as a document whose every field came back empty would give it a zero and
+make declining look identical to failing, which is the reverse of the truth. Coverage
+is reported beside accuracy, and the declined files are listed in the run sidecar.
+
+### Splitting: the free option won
+
+A scanned batch does not arrive as one document per file, so the generator now builds
+bundles — several documents concatenated, with the page each one starts on recorded.
+120 bundles, 333 documents, 361 pages, and **half the joins are same-type on purpose**,
+because one invoice following another is the join a change-of-type splitter cannot see.
+
+| splitter | F1 | files exactly right | merged | over-cut |
+|---|---|---|---|---|
+| `single` — the file is one document | — | `0.108` | 213 | 0 |
+| **`every_page`** — each page is a document | **`0.938`** | **`0.783`** | **0** | 28 |
+| `by_type` — classify each page, cut on change | `0.772` | `0.458` | 62 | 27 |
+
+The classifier-per-page splitter lost to cutting everywhere, and it is the Phase 2
+cascade result again: the clever option beaten by the free one, visible only because
+the baselines were reported beside it.
+
+92% of the documents here are a single page, so cutting everywhere is wrong 28 times,
+while `by_type` misses 62 same-type joins — `0.487` recall on exactly the joins it was
+predicted to be blind to.
+
+It also makes no merges, and a merge is unambiguously expensive: two unrelated
+documents reach the extractor as one, and it emits a record for a document that never
+existed.
+
+An over-cut is not as cheap as it first looks, though, and running the pipeline end to
+end is what showed it. A two-page multi-bill invoice cut in half produces a second half
+that the classifier reads as a plain **invoice** — a header, a table and totals, with
+the repeated per-service structure that distinguishes the type sitting on the page that
+was cut away. So an over-cut does not merely lose fields; it can select the wrong
+schema and fill it confidently. Both failure directions can invent, which is not what
+this section originally claimed.
+
+`by_type` stays in the codebase. It is the right shape wherever multi-page documents
+are common — which this corpus is not — and running it is what produced the comparison.
+
+### What classification costs the stage after it
+
+The phase's own deliverable. Extraction over the same 175 documents, the same model and
+prompts, one thing varying — where the document type came from:
+
+| type from | field accuracy | exact match |
+|---|---|---|
+| the corpus | `0.959` | `0.809` |
+| **the pipeline** | **`0.957`** | **`0.809`** |
+
+Two thousandths across 1,904 graded fields, and exact match identical. The classifier
+placed all 175 correctly — type *and* variant — so the extractor received the same
+schema either way, and what is left is run-to-run model variance rather than
+classification error.
+
+So removing the corpus's answer key costs essentially nothing on clean documents, which
+is the claim Phase 3 was built to test. Every extraction number before this one,
+including Phase 1's, was produced with the corpus handing over the type.
+
+Read it as production conditions on page designs the classifier has trained on. The
+number that predicts a vendor template nobody has seen is the design-holdout `0.944`
+above, not this one.
+
+Visible in the same run and unrelated to classification: resumes score `0.820` against
+`0.97` or better everywhere else, and `target_role` reaches `0.086` with 19 of 35
+missing. The validators in Phase 4 land on the same documents from a different
+direction — null employment years on every role — which is two instruments agreeing
+about where the extractor is weakest.
+
+### What this phase did not close
+
+**Two form variants are still confused**, one document each: `loan` read as
+`onboarding`, and `w4` read as `w9`. The keyword arbiter has no notion of variants, so
+it cannot settle those the way it settles invoice against purchase order. They are the
+next thing worth fixing and they are not what blocks anything.
+
+**The models have not been compared across all four profiles on the rebuilt corpus.**
+The one architecture comparison that has been run since the rebuild used clean
+documents only — 36 of them, four per class — which establishes the mechanism and ranks
+nothing. Whether a words-and-boxes model holds up on faxes, where docTR loses 38% of
+the words, is the open question.
+
+**Fields are not scored end to end through the splitter.** The chain runs — bundle to
+split to classify to extract, with nothing handed the corpus's answers — but the
+splitter is scored on boundaries and the extractor on documents, never on what comes
+out of the far end of both. That needs a metric that aligns predicted pieces to true
+documents and grades fields across the mismatch, and it is where the half-a-multi-bill
+finding would appear as a number rather than as an anecdote.
+
+**Bundles are built from clean documents only.** A real scanner batch is degraded, and
+this corpus cannot yet ask whether splitting survives a fax.
+
 ## Why the corpus comes first
 
 The build order is driven by **what risk each phase retires**, and every phase ends with
@@ -246,7 +519,8 @@ a number that says whether to continue. The corpus and the scoring harness come 
 any pipeline code, so that the very first extractor has something to be measured against
 — and so every change after it can be attributed.
 
-The corpus covers five document types across 3–8 layouts each, a parallel defective set
+The corpus covers five document types — ten page designs each for invoices, purchase
+orders and multi-bill invoices, three for forms and eight for resumes — a parallel defective set
 with 40 tagged defect classes, and five degradation profiles from *clean office scanner*
 to *photocopied then faxed*. Because every degraded document keeps its source label,
 detection accuracy and extraction accuracy can be scored independently, per degradation

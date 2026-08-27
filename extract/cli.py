@@ -85,6 +85,20 @@ def sample(records, doctype, limit):
     return taken
 
 
+def from_manifest(path: str, limit: int):
+    """Documents a splitter found, rather than documents the corpus declared.
+
+    The manifest carries `truth_source` beside each piece so the run can be scored
+    later. It is not read here and must not be: a piece whose type came from the
+    corpus's answer key would make the splitter and the classifier look like they
+    worked. Every piece goes through the classifier like any other unknown document,
+    which is why this mode requires --type-from classifier.
+    """
+    with open(path, encoding="utf-8") as handle:
+        pieces = json.load(handle)
+    return [p["file"] for p in (pieces[:limit] if limit else pieces)]
+
+
 def collect(corpus_root, only, limit):
     """Every corpus document, paired with the type declaration it should be read as."""
     jobs, unknown = [], set()
@@ -96,6 +110,85 @@ def collect(corpus_root, only, limit):
         for record in sample(records, doctype, limit):
             jobs.append((doctype, record["file"], doctype.variant_of(record)))
     return jobs, unknown
+
+
+def predict_types(jobs, corpus_root, config, plugin, concurrency,
+                  normalizer_name: str = ""):
+    """Ask the classifier what each document is, instead of reading it off the corpus.
+
+    This is the whole of Phase 3's claim. Every extraction number before it -- 0.986
+    included -- was produced with the corpus handing over the answer, and a pipeline
+    that cannot be run without its own ground truth has not been measured end to end.
+
+    A document the classifier declines is not extracted. Grading an abstention as a
+    document whose every field came back empty would score it zero and make declining
+    look identical to failing, which is the reverse of the truth: the model said it
+    could not read the page, and a page it cannot read is a page for a person. It is
+    reported as coverage instead, alongside accuracy on what was attempted.
+    """
+    from classify.base import build as build_classifier
+    from concurrent.futures import ThreadPoolExecutor
+
+    # The runner's --normalizer has to reach a composite classifier too, or a cascade
+    # will quietly build the manifest's engine while the extractor uses the one that
+    # was asked for -- two different readings of the same page in one run.
+    classifier = build_classifier(config=config, plugin=plugin,
+                                  overrides={"normalizer": normalizer_name}
+                                  if normalizer_name else None)
+    normalizer = None
+    if getattr(classifier, "NEEDS_TEXT", True):
+        from normalize.base import NORMALIZERS, build as build_normalizer
+        chosen = (config.chosen("normalizer") or "native").strip().lower()
+        declares = {x.name for x in NORMALIZERS.get(
+            chosen, type("x", (), {"SETTINGS": ()})).SETTINGS}
+        normalizer = build_normalizer(
+            config=config, overrides={"corpus": corpus_root} if "corpus" in declares else None)
+    print(f"  classifier: {classifier.describe()}")
+
+    def one(job):
+        true_type, rel, true_variant = job
+        path = os.path.join(corpus_root, rel)
+        document = normalizer.read(path) if normalizer else None
+        result = classifier.classify(document.text if document else "",
+                                     document=document, path=path)
+        return job, result
+
+    predicted, abstained, wrong = [], [], []
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        for done, (job, result) in enumerate(pool.map(one, jobs), 1):
+            true_type, rel, true_variant = job
+            if result.abstained:
+                abstained.append((rel, result.confidence))
+                continue
+            guess = doctypes.REGISTRY.get(result.doc_type)
+            if guess is None:
+                # A label the registry does not carry cannot select a schema. Treated
+                # as an abstention rather than crashing the run.
+                abstained.append((rel, result.confidence))
+                continue
+            if true_type is not None and (guess.name != true_type.name
+                                          or result.variant != true_variant):
+                wrong.append((rel, f"{true_type.name}/{true_variant}".rstrip("/"),
+                              f"{guess.name}/{result.variant}".rstrip("/")))
+            predicted.append((guess, rel, result.variant))
+            if done % 100 == 0:
+                print(f"  classified {done}/{len(jobs)}", flush=True)
+
+    total = len(jobs)
+    known = any(j[0] is not None for j in jobs)
+    right = len(predicted) - len(wrong)
+    if known:
+        print(f"  type from classifier: {right}/{total} exact (type and variant), "
+              f"{len(wrong)} wrong, {len(abstained)} declined")
+    else:
+        # Pieces from a splitter have no declared type to be right or wrong about.
+        print(f"  type from classifier: {len(predicted)}/{total} typed, "
+              f"{len(abstained)} declined")
+    for rel, truth, guess in wrong[:10]:
+        print(f"    {truth:26} read as {guess:26} {rel}")
+    if len(wrong) > 10:
+        print(f"    ... {len(wrong)} total")
+    return predicted, abstained
 
 
 def _cause(error: str) -> str:
@@ -128,11 +221,29 @@ def _resolve_out(value: str) -> str:
 
 def run(args):
     corpus_root = args.corpus
-    jobs, unknown = collect(corpus_root, args.only, args.limit)
+    if args.manifest:
+        if args.type_from != "classifier":
+            raise SystemExit(
+                "--manifest holds documents a splitter found, so nothing knows their "
+                "type yet.\n  Add --type-from classifier.")
+        relatives = from_manifest(args.manifest, args.limit)
+        # doctype is filled in by the classifier; None is a placeholder the
+        # classification pass replaces, and nothing may read it before then.
+        jobs, unknown = [(None, rel, "") for rel in relatives], set()
+    else:
+        jobs, unknown = collect(corpus_root, args.only, args.limit)
     for stem in sorted(unknown):
         print(f"skipping labels/{stem}.json: no document type registered", file=sys.stderr)
     if not jobs:
         raise SystemExit("nothing to extract")
+
+    abstained = []
+    if args.type_from == "classifier":
+        config = config_mod.load(args.config)
+        jobs, abstained = predict_types(jobs, corpus_root, config, args.classifier,
+                                        args.concurrency, args.normalizer)
+        if not jobs:
+            raise SystemExit("the classifier declined every document")
 
     out_path = _resolve_out(args.out)
     if args.dry_run:
@@ -278,6 +389,13 @@ def run(args):
             "rules": {"enabled": active, "changes": rules_fired},
             "failed": failed,
             "skipped_no_text_layer": skipped,
+            # Documents the classifier declined. They are absent from the predictions
+            # rather than present and empty: an abstention graded as a document whose
+            # every field came back blank scores zero, which makes declining look
+            # identical to failing. Coverage belongs next to accuracy, not inside it.
+            "type_from": args.type_from,
+            "declined_by_classifier": [
+                {"file": rel, "confidence": conf} for rel, conf in abstained] or None,
             "usage": total.to_dict(),
         }, handle, indent=2)
         handle.write("\n")
@@ -286,6 +404,13 @@ def run(args):
     if aborted:
         print(f"ABORTED: {aborted}")
         print("  nothing is wrong with the run; the model is just too slow to iterate on.")
+        print()
+    if abstained:
+        attempted = len(jobs)
+        print(f"declined by the classifier: {len(abstained)} of "
+              f"{attempted + len(abstained)} "
+              f"({attempted / (attempted + len(abstained)):.1%} coverage)")
+        print("  not extracted and not graded; they are the queue for a person.")
         print()
     print(f"wrote {out_path}")
     print(f"      {run_path}")
@@ -440,6 +565,15 @@ def main(argv=None):
     go.add_argument("--resume", action="store_true",
                     help="keep successes already in --out; redo failures and the rest")
     go.add_argument("--dry-run", action="store_true", help="list the work, call nothing")
+    go.add_argument("--type-from", default="corpus", choices=("corpus", "classifier"),
+                    help="corpus: the label file says what each document is (the "
+                         "measurement condition for phases 1 and 2). classifier: the "
+                         "pipeline works it out, which is what production does.")
+    go.add_argument("--classifier", default="",
+                    help="which classifier plugin, when --type-from classifier")
+    go.add_argument("--manifest", default="",
+                    help="extract the documents a splitter found (split.cli apply) "
+                         "instead of the documents the corpus declares")
 
     show = sub.add_parser("schema", help="print the schema and prompt for a type")
     show.add_argument("--type", required=True)

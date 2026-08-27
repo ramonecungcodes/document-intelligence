@@ -16,10 +16,13 @@ After generating HTML, render PDFs with render_pdfs.py (uses headless Chrome).
 """
 import os, json, random, html, datetime, argparse
 
+# Page designs live in templates.py -- ten per type, so a whole design can be reserved
+# for testing without spending a third of the training data. See its module docstring.
+from templates import (INVOICE, MULTI_BILL, PURCHASE_ORDER, addr_str, d, esc,
+                       inv_html, mb_html, money, po_html, _mb_ident, _mb_period,
+                       _mb_rows, _mb_site, _rows)
+
 # ------------------------------------------------------------------ helpers
-def esc(s): return html.escape(str(s))
-def money(x): return "${:,.2f}".format(x)
-def d(dt): return dt.strftime("%b %d, %Y")
 def iso(dt): return dt.strftime("%Y-%m-%d")
 
 FONTS = ["Georgia, 'Times New Roman', serif", "'Segoe UI', Arial, sans-serif",
@@ -40,7 +43,6 @@ CUSTOMERS = ["Cascade Analytics","Harbor Point Medical","Sterling & Rowe LLP","P
 def addr():
     c = random.choice(CITIES)
     return {"line1": f"{random.randint(100,9899)} {random.choice(STREETS)}", "city": c[0], "state": c[1], "zip": c[2]}
-def addr_str(a): return f"{a['line1']}, {a['city']}, {a['state']} {a['zip']}"
 def phone(): return f"({random.randint(200,989)}) {random.randint(200,989)}-{random.randint(1000,9999)}"
 
 COMPANIES = [
@@ -76,50 +78,6 @@ def line_items(pool, nmin=2, nmax=6):
     return out
 def totals(items, tr):
     sub=round(sum(i["amount"] for i in items),2); tax=round(sub*tr,2); return sub,tax,round(sub+tax,2)
-
-# ------------------------------------------------------------------ invoice / PO templates
-def _rows(items):
-    return "".join(f"<tr><td>{esc(i['description'])}</td><td class='r'>{i['quantity']}</td>"
-                   f"<td class='r'>{money(i['unit_price'])}</td><td class='r'>{money(i['amount'])}</td></tr>" for i in items)
-
-def inv_html(layout, comp, x):
-    font=x["_font"]; color=comp["color"]; accent=comp["accent"]; rows=_rows(x["line_items"])
-    mono="".join(w[0] for w in comp["name"].split()[:2]).upper()
-    base=f"<style>*{{box-sizing:border-box}}body{{font-family:{font};color:#222;margin:0;padding:40px;font-size:13px;background:#fff}}.r{{text-align:right}}table{{width:100%;border-collapse:collapse;margin-top:18px}}th,td{{padding:8px 10px}}.muted{{color:#666}}</style>"
-    if layout==0:
-        return base+f"""<div style="display:flex;justify-content:space-between;border-bottom:3px solid {color};padding-bottom:14px">
-<div><div style="font-size:26px;font-weight:700;color:{color}">{esc(comp['name'])}</div><div class="muted">{esc(comp['tag'])}</div><div class="muted">{esc(addr_str(x['_vendor_addr']))}</div></div>
-<div style="text-align:right"><div style="font-size:30px;color:{accent};font-weight:700">INVOICE</div><div><b>#{esc(x['invoice_number'])}</b></div><div class="muted">Date: {esc(d(x['_idate']))}</div><div class="muted">Due: {esc(d(x['_ddate']))}</div></div></div>
-<div style="display:flex;justify-content:space-between;margin-top:18px"><div><div class="muted">BILL TO</div><b>{esc(x['bill_to'])}</b><br><span class="muted">{esc(addr_str(x['_bill_addr']))}</span></div><div><div class="muted">PO NUMBER</div><b>{esc(x['po_number'])}</b><br><span class="muted">Terms: {esc(x['terms'])}</span></div></div>
-<table><thead><tr style="background:{color};color:#fff"><th style="text-align:left">Description</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Amount</th></tr></thead><tbody>{rows}</tbody></table>
-<table style="width:300px;margin-left:auto;margin-top:10px"><tr><td class="muted">Subtotal</td><td class="r">{money(x['subtotal'])}</td></tr><tr><td class="muted">Tax ({int(x['_taxrate']*100)}%)</td><td class="r">{money(x['tax'])}</td></tr><tr><td style="border-top:2px solid {color};font-weight:700">Total</td><td class="r" style="border-top:2px solid {color};font-weight:700;color:{accent}">{money(x['total'])}</td></tr></table>
-<p class="muted" style="margin-top:30px">Remit to {esc(comp['name'])}. Thank you for your business.</p>"""
-    if layout==1:
-        return base+f"""<div style="background:{color};color:#fff;padding:22px 24px;border-radius:8px;display:flex;justify-content:space-between;align-items:center">
-<div style="display:flex;align-items:center;gap:14px"><div style="width:52px;height:52px;border-radius:10px;background:{accent};display:flex;align-items:center;justify-content:center;font-weight:800;font-size:20px">{mono}</div><div><div style="font-size:20px;font-weight:700">{esc(comp['name'])}</div><div style="opacity:.85;font-size:12px">{esc(comp['tag'])}</div></div></div>
-<div style="text-align:right"><div style="font-size:22px;letter-spacing:3px">INVOICE</div><div style="opacity:.9">{esc(x['invoice_number'])}</div></div></div>
-<div style="display:flex;justify-content:space-between;margin-top:20px"><div><div class="muted">Billed To</div><b>{esc(x['bill_to'])}</b><br><span class="muted">{esc(addr_str(x['_bill_addr']))}</span></div><div style="text-align:right"><div class="muted">Issued {esc(d(x['_idate']))}</div><div class="muted">Due {esc(d(x['_ddate']))}</div><div class="muted">PO {esc(x['po_number'])} &middot; {esc(x['terms'])}</div></div></div>
-<table><thead><tr style="border-bottom:2px solid {accent}"><th style="text-align:left">Item</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead><tbody>{rows}</tbody></table>
-<div style="display:flex;justify-content:flex-end;margin-top:14px"><div style="width:280px"><div style="display:flex;justify-content:space-between;padding:4px 0" class="muted">Subtotal<span>{money(x['subtotal'])}</span></div><div style="display:flex;justify-content:space-between;padding:4px 0" class="muted">Tax ({int(x['_taxrate']*100)}%)<span>{money(x['tax'])}</span></div><div style="display:flex;justify-content:space-between;padding:10px 0;border-top:2px solid {color};font-weight:800;color:{color}">Total Due<span>{money(x['total'])}</span></div></div></div>"""
-    return base+f"""<div style="border-left:6px solid {accent};padding-left:16px"><div style="font-size:22px;font-weight:700">{esc(comp['name'])}</div><div class="muted">{esc(comp['tag'])} &middot; {esc(addr_str(x['_vendor_addr']))}</div></div>
-<div style="margin-top:24px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px"><div><div class="muted" style="font-size:11px;text-transform:uppercase">Invoice</div><b>{esc(x['invoice_number'])}</b></div><div><div class="muted" style="font-size:11px;text-transform:uppercase">Date / Due</div>{esc(d(x['_idate']))} &rarr; {esc(d(x['_ddate']))}</div><div><div class="muted" style="font-size:11px;text-transform:uppercase">PO / Terms</div>{esc(x['po_number'])} &middot; {esc(x['terms'])}</div></div>
-<div style="margin-top:14px"><span class="muted">Bill to:</span> <b>{esc(x['bill_to'])}</b>, {esc(addr_str(x['_bill_addr']))}</div>
-<table><thead><tr style="border-bottom:1px solid #333"><th style="text-align:left">Description</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Amount</th></tr></thead><tbody>{rows}</tbody></table>
-<div style="margin-top:12px;text-align:right"><div class="muted">Subtotal {money(x['subtotal'])} | Tax {money(x['tax'])}</div><div style="font-size:18px;font-weight:800;color:{accent};margin-top:6px">TOTAL {money(x['total'])}</div></div>"""
-
-def po_html(layout, buyer, x):
-    font=x["_font"]; color=buyer["color"]; accent=buyer["accent"]; rows=_rows(x["line_items"])
-    base=f"<style>*{{box-sizing:border-box}}body{{font-family:{font};color:#222;margin:0;padding:40px;font-size:13px}}.r{{text-align:right}}table{{width:100%;border-collapse:collapse;margin-top:16px}}th,td{{padding:8px 10px}}.muted{{color:#666}}</style>"
-    if layout==0:
-        return base+f"""<div style="display:flex;justify-content:space-between;border-bottom:2px solid {color};padding-bottom:12px"><div><div style="font-size:24px;font-weight:700;color:{color}">{esc(buyer['name'])}</div><div class="muted">{esc(addr_str(x['_buyer_addr']))}</div></div><div style="text-align:right"><div style="font-size:26px;font-weight:800;color:{accent}">PURCHASE ORDER</div><div><b>PO #{esc(x['po_number'])}</b></div><div class="muted">{esc(d(x['_pdate']))}</div></div></div>
-<div style="display:flex;justify-content:space-between;margin-top:16px"><div><div class="muted">VENDOR</div><b>{esc(x['vendor'])}</b><br><span class="muted">{esc(addr_str(x['_vendor_addr']))}</span></div><div><div class="muted">SHIP TO</div><b>{esc(buyer['name'])}</b><br><span class="muted">{esc(addr_str(x['_ship_addr']))}</span></div><div><div class="muted">DELIVER BY</div><b>{esc(d(x['_deliver']))}</b><br><span class="muted">{esc(x['terms'])}</span></div></div>
-<table><thead><tr style="background:{color};color:#fff"><th style="text-align:left">Description</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Amount</th></tr></thead><tbody>{rows}</tbody></table>
-<table style="width:300px;margin-left:auto;margin-top:10px"><tr><td class="muted">Subtotal</td><td class="r">{money(x['subtotal'])}</td></tr><tr><td class="muted">Tax</td><td class="r">{money(x['tax'])}</td></tr><tr><td style="font-weight:800;border-top:2px solid {color}">Total</td><td class="r" style="font-weight:800;border-top:2px solid {color}">{money(x['total'])}</td></tr></table>
-<p class="muted" style="margin-top:24px">Authorized by Procurement &middot; {esc(buyer['name'])}</p>"""
-    return base+f"""<div style="background:{color};color:#fff;padding:18px 22px;display:flex;justify-content:space-between;align-items:center;border-radius:6px"><div style="font-weight:700;font-size:20px">{esc(buyer['name'])}</div><div style="text-align:right"><div style="letter-spacing:2px">PURCHASE ORDER</div><div>{esc(x['po_number'])} &middot; {esc(d(x['_pdate']))}</div></div></div>
-<div style="display:flex;justify-content:space-between;margin-top:18px"><div><div class="muted">Vendor</div><b>{esc(x['vendor'])}</b><br><span class="muted">{esc(addr_str(x['_vendor_addr']))}</span></div><div style="text-align:right"><div class="muted">Deliver by {esc(d(x['_deliver']))}</div><div class="muted">Terms {esc(x['terms'])}</div></div></div>
-<table><thead><tr style="border-bottom:2px solid {accent}"><th style="text-align:left">Item</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Amount</th></tr></thead><tbody>{rows}</tbody></table>
-<div style="text-align:right;margin-top:12px"><span class="muted">Subtotal {money(x['subtotal'])} | Tax {money(x['tax'])}</span><div style="font-weight:800;color:{color};font-size:18px">TOTAL {money(x['total'])}</div></div>"""
 
 # ------------------------------------------------------------------ resume data
 FIRST=["James","Maria","David","Aisha","Carlos","Emily","Wei","Priya","Michael","Sofia","Andre","Nia",
@@ -636,172 +594,6 @@ def _mb_roll(x):
     x["total"] = round(sum(v["total"] for v in s), 2)
     x["section_count"] = len(s)
 
-def make_multibill(vendor, idx, base_date):
-    idate = base_date + datetime.timedelta(days=random.randint(0, 150))
-    term = random.choice(TERMS)
-    dd = {"Net 15": 15, "Net 30": 30, "Net 45": 45, "Due on receipt": 0, "2/10 Net 30": 30}[term]
-    x = dict(invoice_number=f"{vendor['inv_prefix']}-2026{7000+idx}",
-             bill_to=random.choice(CUSTOMERS), terms=term,
-             master_account=f"{vendor['acct_prefix']}-MASTER-{random.randint(10000,99999)}",
-             remit_to=addr_str(addr()),
-             sections=mb_sections(vendor, idate, random.randint(2, 4)),
-             _idate=idate, _ddate=idate + datetime.timedelta(days=dd),
-             _font=FONTS[idx % len(FONTS)], _vendor_addr=addr(), _bill_addr=addr())
-    _mb_roll(x)
-    return x
-
-def _mb_rows(sec, color):
-    return (f"<tr><td colspan='4' style='padding-top:12px;font-weight:700;color:{color}'>"
-            f"{sec['service_type']} &middot; {esc(sec['account_number'])}</td></tr>" + _rows(sec["line_items"]) +
-            f"<tr><td colspan='3' class='r muted'>Subtotal / Tax</td><td class='r'>"
-            f"{money(sec['subtotal'])} / {money(sec['tax'])}</td></tr>"
-            f"<tr><td colspan='3' class='r' style='font-weight:700'>{esc(sec['service_code'])} total</td>"
-            f"<td class='r' style='font-weight:700'>{money(sec['total'])}</td></tr>")
-
-def _mb_period(sec):
-    if not sec["service_period_start"] and not sec["service_period_end"]:
-        return "&mdash;"
-    a = d(datetime.date.fromisoformat(sec["service_period_start"])) if sec["service_period_start"] else "?"
-    b = d(datetime.date.fromisoformat(sec["service_period_end"])) if sec["service_period_end"] else "?"
-    return f"{esc(a)} &ndash; {esc(b)}"
-
-def _mb_site(sec):
-    """The service address behind a SITE label, or nothing at all.
-
-    Most sections have no per-service address and must render none: the extractor is
-    asked to return null for those, and a corpus that prints something anyway would be
-    grading the model against a page that disagrees with its own labels.
-    """
-    if not sec.get("service_location"):
-        return ""
-    return " &middot; <span class='lbl'>Site</span> " + esc(sec["service_location"])
-
-
-def _mb_ident(sec, sep="&nbsp;&nbsp;"):
-    """The section's identifiers, each behind its own label.
-
-    A field the reader has to infer from column position is a field the extractor has
-    to infer too. Labelling them is what a real bill does, and it is the difference
-    between a hard document and an ambiguous one.
-    """
-    bits = [f"<span class='lbl'>Code</span> {esc(sec['service_code'])}",
-            f"<span class='lbl'>Account</span> {esc(sec['account_number'])}"]
-    if sec.get("reference_number"):
-        bits.append(f"<span class='lbl'>{esc(sec['reference_label'])}</span> "
-                    f"{esc(sec['reference_number'])}")
-    if sec.get("cost_center"):
-        bits.append(f"<span class='lbl'>Cost centre</span> {esc(sec['cost_center'])}")
-    return sep.join(bits)
-
-
-def mb_html(layout, vendor, x):
-    font = x["_font"]; color = vendor["color"]; accent = vendor["accent"]
-    base = (f"<style>*{{box-sizing:border-box}}body{{font-family:{font};color:#222;margin:0;padding:38px;"
-            f"font-size:12.5px;background:#fff}}.r{{text-align:right}}table{{width:100%;border-collapse:collapse}}"
-            f"th,td{{padding:6px 9px}}.muted{{color:#666}}.lbl{{font-size:10px;text-transform:uppercase;"
-            f"letter-spacing:.06em;color:#777}}</style>")
-    head = (f"<div style='display:flex;justify-content:space-between;border-bottom:3px solid {color};padding-bottom:12px'>"
-            f"<div><div style='font-size:23px;font-weight:700;color:{color}'>{vendor['name']}</div>"
-            f"<div class='muted'>{vendor['tag']}</div><div class='muted'>{esc(addr_str(x['_vendor_addr']))}</div></div>"
-            f"<div style='text-align:right'><div style='font-size:26px;color:{accent};font-weight:700'>INVOICE</div>"
-            f"<div><b>#{esc(x['invoice_number'])}</b></div><div class='muted'>Date: {esc(d(x['_idate']))}</div>"
-            f"<div class='muted'>Due: {esc(d(x['_ddate']))}</div></div></div>"
-            f"<div style='display:flex;justify-content:space-between;margin-top:14px'>"
-            f"<div><div class='lbl'>Bill to</div><b>{esc(x['bill_to'])}</b><br>"
-            f"<span class='muted'>{esc(addr_str(x['_bill_addr']))}</span></div>"
-            f"<div><div class='lbl'>Master account</div><b>{esc(x['master_account'])}</b><br>"
-            f"<span class='muted'>Terms: {esc(x['terms'])}</span></div>"
-            f"<div style='text-align:right'><div class='lbl'>Services billed</div>"
-            f"<b style='font-size:17px;color:{accent}'>{x['section_count']}</b>"
-            f"<div class='muted'>pay each separately</div></div></div>")
-    note = (f"<p class='muted' style='margin-top:22px'>Each service above is billed to its own account and "
-            f"may be remitted separately. Reference the account number shown for that service when paying. "
-            f"Remit to {vendor['name']}, {esc(x['remit_to'])}.</p>")
-
-    if layout == 0:      # summary table with a column per identifier, then detail
-        summ = "".join(
-            f"<tr><td><b>{esc(s['service_type'])}</b></td><td>{esc(s['service_code'])}</td>"
-            f"<td>{esc(s['account_number'])}</td>"
-            f"<td>{esc(s['reference_label'])} {esc(s['reference_number'])}</td>"
-            f"<td>{_mb_period(s)}</td><td>{esc(s['cost_center'])}</td>"
-            f"<td class='r' style='font-weight:700'>{money(s['total'])}</td></tr>"
-            for s in x["sections"])
-        detail = "".join(
-            f"<div style='margin-top:16px;border-left:4px solid {accent};padding-left:12px'>"
-            f"<div style='font-weight:700;color:{color}'>{esc(s['service_type'])}</div>"
-            f"<div class='muted' style='margin:2px 0'>{_mb_ident(s)}</div>"
-            f"<div class='muted'>Service period {_mb_period(s)}"
-            f"{_mb_site(s)}</div>"
-            f"<table><thead><tr style='border-bottom:1px solid #999'><th style='text-align:left'>Description</th>"
-            f"<th class='r'>Qty</th><th class='r'>Unit</th><th class='r'>Amount</th></tr></thead>"
-            f"<tbody>{_rows(s['line_items'])}</tbody></table>"
-            f"<div class='r' style='margin-top:4px'>Subtotal {money(s['subtotal'])} &middot; Tax {money(s['tax'])} &middot; "
-            f"<b style='color:{accent}'>Service total {money(s['total'])}</b></div></div>" for s in x["sections"])
-        return base + head + (
-            f"<table style='margin-top:18px'><thead><tr style='background:{color};color:#fff'>"
-            f"<th style='text-align:left'>Service</th><th style='text-align:left'>Code</th>"
-            f"<th style='text-align:left'>Account</th><th style='text-align:left'>Reference</th>"
-            f"<th style='text-align:left'>Service period</th><th style='text-align:left'>Cost centre</th>"
-            f"<th class='r'>Amount due</th></tr></thead><tbody>{summ}</tbody></table>"
-            f"{detail}"
-            f"<table style='width:320px;margin-left:auto;margin-top:16px'>"
-            f"<tr><td class='muted'>Invoice subtotal</td><td class='r'>{money(x['subtotal'])}</td></tr>"
-            f"<tr><td class='muted'>Invoice tax</td><td class='r'>{money(x['tax'])}</td></tr>"
-            f"<tr><td style='border-top:2px solid {color};font-weight:700'>Total due</td>"
-            f"<td class='r' style='border-top:2px solid {color};font-weight:700;color:{accent}'>"
-            f"{money(x['total'])}</td></tr></table>" + note)
-
-    if layout == 1:      # boxed per-service statements, one labelled line per identifier
-        cards = "".join(
-            f"<div style='border:1px solid #ccc;border-top:5px solid {color};margin-top:14px;padding:12px 14px'>"
-            f"<div style='font-size:15px;font-weight:700;color:{color}'>{esc(s['service_type'])}</div>"
-            f"<table style='width:auto;margin-top:6px'>"
-            f"<tr><td class='lbl'>Service code</td><td><b>{esc(s['service_code'])}</b></td>"
-            f"<td class='lbl' style='padding-left:22px'>Account</td><td><b>{esc(s['account_number'])}</b></td></tr>"
-            f"<tr><td class='lbl'>{esc(s['reference_label'])}</td><td><b>{esc(s['reference_number'])}</b></td>"
-            f"<td class='lbl' style='padding-left:22px'>Cost centre</td><td>{esc(s['cost_center'])}</td></tr>"
-            f"<tr><td class='lbl'>Service period</td><td colspan='3'>{_mb_period(s)}"
-            f"{_mb_site(s)}</td></tr>"
-            f"</table>"
-            f"<table style='margin-top:8px'><thead><tr style='border-bottom:1px solid #bbb'>"
-            f"<th style='text-align:left'>Description</th><th class='r'>Qty</th><th class='r'>Unit</th>"
-            f"<th class='r'>Amount</th></tr></thead><tbody>{_rows(s['line_items'])}</tbody></table>"
-            f"<div style='display:flex;justify-content:flex-end;gap:18px;margin-top:6px'>"
-            f"<span class='muted'>Subtotal {money(s['subtotal'])}</span>"
-            f"<span class='muted'>Tax {money(s['tax'])}</span>"
-            f"<span style='font-weight:800;color:{accent}'>Due {money(s['total'])}</span></div></div>"
-            for s in x["sections"])
-        return base + head + cards + (
-            f"<div style='display:flex;justify-content:flex-end;margin-top:18px'><div style='width:300px'>"
-            f"<div style='display:flex;justify-content:space-between' class='muted'>Sum of services"
-            f"<span>{money(x['subtotal'])}</span></div>"
-            f"<div style='display:flex;justify-content:space-between' class='muted'>Tax"
-            f"<span>{money(x['tax'])}</span></div>"
-            f"<div style='display:flex;justify-content:space-between;border-top:2px solid {color};"
-            f"padding-top:8px;font-weight:800;color:{color}'>Total due<span>{money(x['total'])}</span></div>"
-            f"</div></div>" + note)
-
-    # layout 2: a labelled block per service, then one continuous ledger
-    legend = "".join(
-        f"<div style='border-bottom:1px dotted #bbb;padding:5px 0'>"
-        f"<b>{esc(s['service_type'])}</b><br><span class='muted'>{_mb_ident(s)}</span><br>"
-        f"<span class='muted'><span class='lbl'>Period</span> {_mb_period(s)}"
-        f"{(' &nbsp; <span class=\'lbl\'>Site</span> ' + esc(s['service_location'])) if s['service_location'] else ''}"
-        f"</span></div>"
-        for s in x["sections"])
-    body = "".join(_mb_rows(s, color) for s in x["sections"])
-    return base + head + (
-        f"<div style='margin-top:16px;border:1px solid #ddd;padding:10px 12px'>"
-        f"<div class='lbl' style='margin-bottom:4px'>Separately payable services</div>{legend}</div>"
-        f"<table style='margin-top:10px'><thead><tr style='border-bottom:2px solid {color}'>"
-        f"<th style='text-align:left'>Description</th><th class='r'>Qty</th><th class='r'>Unit</th>"
-        f"<th class='r'>Amount</th></tr></thead><tbody>{body}</tbody></table>"
-        f"<div style='margin-top:12px;text-align:right'>"
-        f"<div class='muted'>Invoice subtotal {money(x['subtotal'])} | Tax {money(x['tax'])}</div>"
-        f"<div style='font-size:17px;font-weight:800;color:{accent};margin-top:5px'>"
-        f"TOTAL DUE {money(x['total'])}</div></div>" + note)
-
-
 def defect_multibill(x):
     """Defects specific to split billing: the roll-up disagrees, or a section cannot be
     routed to its own internal invoice because its identifier is missing or duplicated."""
@@ -864,7 +656,29 @@ def defect_multibill(x):
         irr.append(defect)
     return sorted(set(irr))
 
-# ------------------------------------------------------------------ main
+
+def make_multibill(vendor, idx, base_date):
+    idate = base_date + datetime.timedelta(days=random.randint(0, 150))
+    term = random.choice(TERMS)
+    dd = {"Net 15": 15, "Net 30": 30, "Net 45": 45, "Due on receipt": 0, "2/10 Net 30": 30}[term]
+    x = dict(invoice_number=f"{vendor['inv_prefix']}-2026{7000+idx}",
+             bill_to=random.choice(CUSTOMERS), terms=term,
+             master_account=f"{vendor['acct_prefix']}-MASTER-{random.randint(10000,99999)}",
+             remit_to=addr_str(addr()),
+             sections=mb_sections(vendor, idate, random.randint(2, 4)),
+             _idate=idate, _ddate=idate + datetime.timedelta(days=dd),
+             _font=FONTS[idx % len(FONTS)], _vendor_addr=addr(), _bill_addr=addr())
+    _mb_roll(x)
+    return x
+
+def _mb_rows(sec, color):
+    return (f"<tr><td colspan='4' style='padding-top:12px;font-weight:700;color:{color}'>"
+            f"{sec['service_type']} &middot; {esc(sec['account_number'])}</td></tr>" + _rows(sec["line_items"]) +
+            f"<tr><td colspan='3' class='r muted'>Subtotal / Tax</td><td class='r'>"
+            f"{money(sec['subtotal'])} / {money(sec['tax'])}</td></tr>"
+            f"<tr><td colspan='3' class='r' style='font-weight:700'>{esc(sec['service_code'])} total</td>"
+            f"<td class='r' style='font-weight:700'>{money(sec['total'])}</td></tr>")
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, default=42, help="change this for a fresh, unseen set")
@@ -898,6 +712,10 @@ def main():
             dd={"Net 15":15,"Net 30":30,"Net 45":45,"Due on receipt":0,"2/10 Net 30":30}[term]
             items=line_items(comp["items"]); tr=random.choice([0.0,0.06,0.07,0.0825]); sub,tax,tot=totals(items,tr)
             invno=f"INV-2026{ic}"; ic+=1
+            # Recorded, not just chosen. Which design a document used is what makes an
+            # unseen-design test set possible; the earlier corpus varied the layout and
+            # kept no note of it, so the question could not be asked of invoices at all.
+            inv_layout=(ci*a.invoices_per_company+n)%len(INVOICE)
             x=dict(invoice_number=invno,bill_to=random.choice(CUSTOMERS),po_number=f"PO-{random.randint(40000,49999)}",
                    terms=term,line_items=items,subtotal=sub,tax=tax,total=tot,_idate=idate,
                    _ddate=idate+datetime.timedelta(days=dd),_taxrate=tr,_font=FONTS[ci%len(FONTS)],
@@ -905,8 +723,8 @@ def main():
             irr=defect_invoice(x) if a.irregular else []
             fn=f"{slug}_{invno}"
             open(os.path.join(OUT,"source_html/invoices",fn+".html"),"w",encoding="utf-8").write(
-                f"<!doctype html><html><head><meta charset='utf-8'></head><body>{inv_html(n%3,comp,x)}</body></html>")
-            inv_labels.append(dict(file=f"invoices/{fn}.pdf",doc_type="invoice",vendor_name=comp["name"],
+                f"<!doctype html><html><head><meta charset='utf-8'></head><body>{inv_html(inv_layout,comp,x)}</body></html>")
+            inv_labels.append(dict(file=f"invoices/{fn}.pdf",doc_type="invoice",layout=inv_layout,vendor_name=comp["name"],
                 invoice_number=x["invoice_number"],invoice_date=iso(x["_idate"]),due_date=iso(x["_ddate"]),po_number=x["po_number"],
                 bill_to=x["bill_to"],terms=term,currency="USD",subtotal=x["subtotal"],tax=x["tax"],total=x["total"],
                 line_items=[{k:i[k] for k in("description","quantity","unit_price","amount")} for i in x["line_items"]],
@@ -921,11 +739,12 @@ def main():
             x=dict(po_number=pono,vendor=supplier["name"],terms=term,line_items=items,subtotal=sub,tax=tax,total=tot,
                    _pdate=pdate,_deliver=pdate+datetime.timedelta(days=random.randint(7,45)),_font=FONTS[(ci+3)%len(FONTS)],
                    _buyer_addr=addr(),_vendor_addr=addr(),_ship_addr=addr())
+            po_layout=(ci*a.pos_per_company+n)%len(PURCHASE_ORDER)
             irr=defect_po(x) if a.irregular else []
             fn=f"{slug}_{pono}"
             open(os.path.join(OUT,"source_html/purchase_orders",fn+".html"),"w",encoding="utf-8").write(
-                f"<!doctype html><html><head><meta charset='utf-8'></head><body>{po_html(n%2,buyer,x)}</body></html>")
-            po_labels.append(dict(file=f"purchase_orders/{fn}.pdf",doc_type="purchase_order",buyer=buyer["name"],
+                f"<!doctype html><html><head><meta charset='utf-8'></head><body>{po_html(po_layout,buyer,x)}</body></html>")
+            po_labels.append(dict(file=f"purchase_orders/{fn}.pdf",doc_type="purchase_order",layout=po_layout,buyer=buyer["name"],
                 vendor=x["vendor"],po_number=x["po_number"],po_date=iso(pdate),delivery_date=iso(x["_deliver"]),terms=term,
                 currency="USD",subtotal=x["subtotal"],tax=x["tax"],total=x["total"],
                 line_items=[{k:i[k] for k in("description","quantity","unit_price","amount")} for i in x["line_items"]],
@@ -968,7 +787,7 @@ def main():
         vendor = MULTIBILL_VENDORS[i % len(MULTIBILL_VENDORS)]
         x = make_multibill(vendor, i, base_date)
         irr = defect_multibill(x) if a.irregular else []
-        layout = i % 3
+        layout = i % len(MULTI_BILL)
         slug = vendor["name"].split()[0].lower()
         fn = f"{slug}_{x['invoice_number'] or 'NOINV-%04d' % i}"
         open(os.path.join(OUT,"source_html/multi_bill_invoices",fn+".html"),"w",encoding="utf-8").write(
