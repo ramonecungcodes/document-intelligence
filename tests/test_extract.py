@@ -390,3 +390,70 @@ class TestAllFailedIsAFailure:
     def test_a_message_with_no_colon_survives(self):
         from extract.cli import _cause
         assert _cause("something went wrong") == "something went wrong"
+
+
+class TestRepeatingGroupsAreBounded:
+    """An unbounded array in a constrained-decoding schema can loop forever.
+
+    Under structured output the model is never invalid while emitting one more array
+    element, so nothing forces it to close the array -- it can only stop by exhausting
+    max_tokens. One resume did exactly that, repeating the same work-history entry
+    until it had produced 49,853 characters where the normal prediction is 400-900.
+    No timeout catches it either: a socket timeout fires on silence, and a looping
+    model streams steadily.
+
+    maxItems is a stop condition, not a claim about how many rows a document may have.
+    The largest repeating group anywhere in the corpus is six line items.
+    """
+
+    def groups_in(self, schema):
+        for name, prop in schema.get("properties", {}).items():
+            if prop.get("type") == "array":
+                yield name, prop
+                yield from self.groups_in(prop.get("items", {}))
+
+    def test_every_repeating_group_has_a_ceiling(self):
+        from core.doctypes import REGISTRY
+        for type_name, doctype in REGISTRY.items():
+            found = list(self.groups_in(json_schema(doctype)))
+            for name, prop in found:
+                assert prop.get("maxItems"), f"{type_name}.{name} is unbounded"
+
+    def test_nested_groups_are_bounded_too(self):
+        """sections contain line_items; the inner array loops just as happily."""
+        from core.doctypes import REGISTRY
+        sections = json_schema(REGISTRY["multi_bill_invoice"])["properties"]["sections"]
+        assert sections["maxItems"]
+        assert sections["items"]["properties"]["line_items"]["maxItems"]
+
+    def test_the_ceiling_clears_the_corpus_by_a_wide_margin(self):
+        """A cap that truncates a real document would trade one bug for a worse one."""
+        import glob
+        import json as _json
+        import os
+        root = os.environ.get("DI_DATASET_ROOT", "/data")
+        paths = glob.glob(os.path.join(root, "labels", "*.json"))
+        if not paths:
+            pytest.skip("no generated corpus available")
+
+        def widest(rows):
+            most = 0
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                for value in row.values():
+                    if isinstance(value, list):
+                        most = max(most, len(value), widest(value))
+            return most
+
+        observed = 0
+        for path in paths:
+            for record in _json.load(open(path, encoding="utf-8")):
+                for group in ("line_items", "work_history", "sections"):
+                    rows = record.get(group)
+                    if isinstance(rows, list):
+                        observed = max(observed, len(rows), widest(rows))
+        from core.doctypes import REGISTRY
+        ceiling = min(g.max_rows for d in REGISTRY.values() for g in d.groups)
+        assert ceiling >= observed * 4, \
+            f"ceiling {ceiling} is close to the corpus maximum {observed}; raise it"

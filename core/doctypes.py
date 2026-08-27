@@ -42,6 +42,7 @@ class Group:
     keys: tuple = ()            # fields that identify a row, if any
     help: str = ""              # what counts as a row -- and, as often matters more,
                                 # what does not
+    max_rows: int = 50          # hard ceiling in the schema; see extract.schema._array
 
 
 @dataclass(frozen=True)
