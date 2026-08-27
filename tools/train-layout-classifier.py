@@ -263,7 +263,10 @@ def main(argv=None) -> int:
                     "runner_up": LABELS[order[j][1].item()],
                 })
 
-    report = os.path.join(repo, "reports", "layout-classifier.json")
+    # Named after the model it describes. Two runs writing one filename means the
+    # second silently destroys the first's evidence, which in a repository whose
+    # argument is its numbers is worse than not writing the file at all.
+    report = os.path.join(repo, "reports", f"{os.path.basename(args.out)}.json")
     os.makedirs(os.path.dirname(report), exist_ok=True)
     with open(report, "w", encoding="utf-8", newline="\n") as handle:
         json.dump({"checkpoint": args.checkpoint, "epochs": args.epochs,
