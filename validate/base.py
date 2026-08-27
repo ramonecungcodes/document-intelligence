@@ -117,10 +117,19 @@ def build_all(config=None, enabled=None):
 
     Ordered by name rather than registration, so a report reads the same way twice and
     a diff between two runs is about the documents rather than about import order.
+
+    Which rules run is a manifest decision like every other stage's. `validator` names
+    them; blank means all of them, because a rule that has passed the self-test has no
+    reason to be off and forgetting to list one would silently stop checking something.
+    Turning a rule off is the deliberate act, and it happens where every other pipeline
+    choice is written down.
     """
     from core import config as config_mod
 
     config = config or config_mod.load()
+    if enabled is None:
+        declared = (config.chosen("validator") or "").strip()
+        enabled = [n.strip() for n in declared.split(",") if n.strip()] or None
     chosen = enabled if enabled is not None else sorted(VALIDATORS)
     out = []
     for name in sorted(chosen):

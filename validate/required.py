@@ -39,11 +39,12 @@ REQUIRED = {
 # Forms differ by variant: a W-9 has no bank account to be missing, and demanding one
 # would fire on every clean W-9 in the corpus.
 REQUIRED_FORM = {
-    # `signature` and `sign_date` are printed on the page but live in the generator's
-    # render metadata rather than its labels, so no ground truth records them and the
-    # schema does not ask for them. 89 injected defects nothing downstream can see --
-    # a disagreement between the defect catalogue and the type registry, not a rule
-    # left unwritten. Adding them is a corpus change and is noted rather than faked.
+    # Every variant ends in a signature block, and whether it was signed is the largest
+    # defect class in the corpus. These two were unreachable until the generator
+    # started recording them and the registry started asking: the block was printed on
+    # the page and written down nowhere, so 89 injected defects had neither ground
+    # truth to compare against nor a schema field to arrive in.
+    "": {"signature": "missing_signature", "sign_date": "missing_sign_date"},
     "onboarding": {"bank_account": "missing_bank_account"},
     "claim": {"adjuster_name": "missing_adjuster"},
 }
