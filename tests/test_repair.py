@@ -149,3 +149,55 @@ class TestFailuresAndSlices:
 
     def test_an_empty_arm_renders_rather_than_raising(self):
         assert "no documents" in render(compare({"reprompt": RepairScore("reprompt")}))
+
+
+class TestAWinBetweenTwoLosersIsNotAWin:
+    """The degraded-corpus result, reduced to its arithmetic.
+
+    Both arms left documents worse than they were found, and the guided arm was
+    resolvably better than the blind one. Every individual statement in that sentence
+    is true, and "reprompt beats the baseline, p<0.05" is the one that gets quoted.
+    """
+
+    def losers(self):
+        # Both arms harmful; the guided one consistently less so.
+        rerun = arm("rerun", [(0.6, 0.4)] * 20)
+        guided = arm("reprompt", [(0.6, 0.5)] * 20)
+        return compare({"rerun": rerun, "reprompt": guided})
+
+    def test_the_paired_win_is_still_reported(self):
+        data = self.losers()
+        pair = data["paired"]["reprompt"]
+        assert pair["resolvable"] and pair["mean"] > 0
+
+    def test_but_it_is_qualified_in_the_same_breath(self):
+        text = render(self.losers())
+        assert "less harmful" in text
+        assert "Neither should run on these documents." in text
+
+    def test_a_net_negative_arm_is_called_out_above_the_fold(self):
+        """Not in a footnote. An arm scoring below zero should be off, and that has to
+        be the first thing read after the table."""
+        text = render(self.losers())
+        assert "NET-NEGATIVE" in text
+        headline = text.index("NET-NEGATIVE")
+        assert headline < text.index("reprompt against rerun")
+
+    def test_two_healthy_arms_are_not_warned_about(self):
+        """The warning must not fire on a genuinely good result, or it becomes noise
+        that is scrolled past when it matters."""
+        data = compare({"rerun": arm("rerun", [(0.5, 0.6)] * 20),
+                        "reprompt": arm("reprompt", [(0.5, 0.8)] * 20)})
+        text = render(data)
+        assert "NET-NEGATIVE" not in text
+        assert "less harmful" not in text
+
+    def test_gates_are_kept_per_document(self):
+        """So "the gates went quiet while the documents got worse" is checkable one
+        document at a time rather than inferred from two totals."""
+        score = RepairScore()
+        score.add(outcome(0.9, 0.3, gates_before=2, gates_after=0,
+                          file="invoices/x.pdf"))
+        data = score.to_dict()
+        assert data["gates"]["invoices/x.pdf"] == [2, 0]
+        assert data["deltas"]["invoices/x.pdf"] < 0

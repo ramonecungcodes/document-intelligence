@@ -137,6 +137,12 @@ class RepairScore:
             # another forty documents -- which is exactly the question two runs of
             # this comparison have already disagreed about.
             "deltas": {r.file: round(r.delta, 4) for r in rows},
+            # Per document alongside the delta, so "the gates went quiet while the
+            # documents got worse" can be checked one document at a time instead of
+            # inferred from two totals. On degraded documents that pattern is the
+            # finding, and a claim that large should not rest on arithmetic done in
+            # a commit message.
+            "gates": {r.file: [r.gates_before, r.gates_after] for r in rows},
         }
 
 
@@ -271,6 +277,13 @@ def render(data: dict, slices: dict = None) -> str:
             f"{_fmt(row['net_delta'], 9, sign=True)}"
             f"{row['improved']:>8}{row['damaged']:>7}{row['gates_clear']:>7}"
             f"{_fmt(row.get('over_rerun'), 10, sign=True)}")
+    harmful = [name for name, row in data["arms"].items()
+               if row.get("documents") and (row.get("net_delta") or 0) < 0]
+    if harmful:
+        out.append("")
+        out.append(f"  NET-NEGATIVE: {', '.join(harmful)} left documents worse than "
+                   f"they were found.")
+        out.append("  Repair is optional. An arm that scores below zero should be off.")
     out.append("")
     out.append("  `better` and `worse` are documents, scored against the corpus labels.")
     out.append("  `gates` is how many stopped tripping a rule -- a diagnostic, not the")
@@ -297,6 +310,16 @@ def render(data: dict, slices: dict = None) -> str:
             out.append("    The feedback is worth something beyond a second sample.")
         else:
             out.append("    The feedback is worse than a second sample alone.")
+        # A resolved win between two arms says nothing about whether either should
+        # run. Both can be harmful, and then "beats the baseline" means "does less
+        # damage" -- which is the single most quotable-out-of-context line this
+        # report can produce, so the qualification is attached to it rather than
+        # left further down the page.
+        arm_row = data["arms"].get(name) or {}
+        base_row = data["arms"].get("rerun") or {}
+        if (arm_row.get("net_delta") or 0) < 0 and (base_row.get("net_delta") or 0) < 0:
+            out.append("    But BOTH arms are net-negative here. This is less harmful,")
+            out.append("    not helpful. Neither should run on these documents.")
 
     for name, row in data["arms"].items():
         if row.get("documents") and row["damaged"] > row["improved"]:
