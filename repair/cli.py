@@ -35,44 +35,51 @@ REPORTS_DIR = os.environ.get("DI_REPORTS_DIR", "/reports")
 
 
 def _candidates(args, config):
-    """The documents to repair, and their complaints -- chosen once for every arm."""
+    """The documents to repair, and their complaints -- chosen once for every arm.
+
+    The signals come from `eval.cli.signal_rows`, which is also what `route.cli` uses.
+    They were computed separately here once, and the two disagreed: this module built
+    features without the signals sidecar, so `classifier_confidence` was always absent,
+    that gate never fired, and repair silently saw 40 flagged documents where the router
+    saw 63. Neither number looked wrong. Two implementations of one decision is the
+    failure this project keeps finding, and the fix is always the same -- have one.
+    """
     import repair
-    from route import features as feature_mod
+    from eval.cli import signal_rows
     from route import policy as policy_mod
     from validate.base import build_all
 
-    records = scoring.load_records(args.predictions)
-    only = [t.strip() for t in args.only.split(",") if t.strip()] or None
-    graded = scoring.per_document(args.corpus, records, only)
     validators = build_all(config)
     policy = policy_mod.build(config)
+    rows = signal_rows(args)
 
-    truth_of = {}
-    for stem, rows in scoring.load_corpus(args.corpus, only).items():
+    by_file = {}
+    for stem, labels in scoring.load_corpus(args.corpus, [
+            t.strip() for t in args.only.split(",") if t.strip()] or None).items():
         spec = doctypes.for_label_file(stem)
-        for row in rows:
-            key = str(row.get("file", "")).replace("\\", "/")
+        for label in labels:
+            key = str(label.get("file", "")).replace("\\", "/")
             if key:
-                truth_of[key] = (stem, spec, spec.variant_of(row) if spec else "")
+                by_file[key] = (spec, spec.variant_of(label) if spec else "")
+
+    records = {str(r.get("file", "")).replace("\\", "/"): r
+               for r in scoring.load_records(args.predictions)}
 
     out = []
-    for record in records:
-        key = str(record.get("file", "")).replace("\\", "/")
-        before = graded.get(key)
-        if key not in truth_of or before is None or before["failed"]:
+    for row in rows:
+        key = row["file"]
+        spec, variant = by_file.get(key, (None, ""))
+        record = records.get(key)
+        if spec is None or record is None:
             continue
-        if before["field_accuracy"] is None:
-            continue
-        stem, spec, variant = truth_of[key]
-        signals = feature_mod.extract(record, spec, variant, validators)
-        decision = policy.decide(signals)
+        decision = policy.decide(row["signals"])
         if args.flagged_only and not decision.review:
             continue
         out.append({
-            "file": key, "doc_type": stem, "spec": spec, "variant": variant,
-            "profile": feature_mod.profile_of(key),
+            "file": key, "doc_type": row["truth"], "spec": spec, "variant": variant,
+            "profile": row["profile"],
             "record": record,
-            "before": before["field_accuracy"],
+            "before": row["outcome"],
             "gates_before": len(decision.reasons),
             "complaints": repair.complaints_for(record, spec, variant, validators,
                                                 decision),

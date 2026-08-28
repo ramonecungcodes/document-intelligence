@@ -131,7 +131,52 @@ class RepairScore:
             # critics rather than against the page.
             "gates_clear": sum(1 for r in rows if r.gates_clear),
             "gates_clear_rate": _rate(sum(1 for r in rows if r.gates_clear), len(rows)),
+            # Per document, because the arms saw the same documents and the only
+            # honest comparison between them is paired. Without these the report can
+            # say two arms differ by 0.011 and nothing about whether that survives
+            # another forty documents -- which is exactly the question two runs of
+            # this comparison have already disagreed about.
+            "deltas": {r.file: round(r.delta, 4) for r in rows},
         }
+
+
+def paired(a: dict, b: dict) -> dict:
+    """Arm `a` against arm `b`, document by document.
+
+    Paired, because both arms ran over the identical document set. The unpaired
+    difference of two means throws away the strongest thing known about this
+    comparison -- that a document hard for one arm was hard for the other -- and
+    unpaired noise on forty documents is far larger than the effect being looked for.
+
+    The interval is the ordinary normal approximation on the mean of the per-document
+    differences. It is reported because the alternative is quoting a difference with no
+    sense of its width, and two runs of this comparison have already come out with
+    opposite signs -- which is not a contradiction, it is what an effect smaller than
+    its own error bar looks like when you run it twice.
+    """
+    shared = sorted(set(a.get("deltas") or {}) & set(b.get("deltas") or {}))
+    if len(shared) < 3:
+        return {"documents": len(shared), "mean": None, "stderr": None,
+                "interval": None, "resolvable": False}
+    diffs = [a["deltas"][key] - b["deltas"][key] for key in shared]
+    n = len(diffs)
+    mean = sum(diffs) / n
+    variance = sum((d - mean) ** 2 for d in diffs) / (n - 1) if n > 1 else 0.0
+    stderr = (variance / n) ** 0.5
+    half = 1.96 * stderr
+    return {
+        "documents": n,
+        "mean": round(mean, 4),
+        "stderr": round(stderr, 4),
+        "interval": [round(mean - half, 4), round(mean + half, 4)],
+        # Whether the interval excludes zero. When it does not, the difference has not
+        # been measured -- it has been observed once, and the honest report says so
+        # rather than quoting the point estimate.
+        "resolvable": (mean - half > 0) or (mean + half < 0),
+        "better": sum(1 for d in diffs if d > EPSILON),
+        "worse": sum(1 for d in diffs if d < -EPSILON),
+        "tied": sum(1 for d in diffs if abs(d) <= EPSILON),
+    }
 
 
 def compare(arms: dict) -> dict:
@@ -150,8 +195,14 @@ def compare(arms: dict) -> dict:
             continue
         row["over_rerun"] = round((row["net_delta"] or 0)
                                   - (baseline["net_delta"] or 0), 4)
+    pairs = {}
+    if baseline:
+        for name, row in scored.items():
+            if name != "rerun" and row.get("documents"):
+                pairs[name] = paired(row, baseline)
     return {"arms": scored,
             "baseline": "rerun" if baseline else None,
+            "paired": pairs,
             "documents": max((r.get("documents", 0) for r in scored.values()),
                              default=0)}
 
@@ -173,6 +224,24 @@ def by_slice(score: RepairScore, key: str = "doc_type") -> list:
             "damaged": damaged,
         })
     return out
+
+
+def _needed(pair) -> str:
+    """Roughly how many documents would put the observed effect outside the interval.
+
+    Standard error falls as 1/sqrt(n), so the multiplier is (1.96 * sd / effect)^2.
+    Deliberately rough and rendered as an order of magnitude: the point is to say
+    whether the answer is another forty documents or another four thousand, which is a
+    decision about whether the question is worth pursuing at all.
+    """
+    if not pair.get("mean") or not pair.get("stderr"):
+        return "many more"
+    n = pair["documents"]
+    sd = pair["stderr"] * (n ** 0.5)
+    needed = ((1.96 * sd) / abs(pair["mean"])) ** 2
+    if needed > 100000:
+        return "far more than this corpus holds"
+    return f"~{int(needed):,}"
 
 
 def _fmt(value, width=8, digits=3, sign=False):
@@ -208,16 +277,29 @@ def render(data: dict, slices: dict = None) -> str:
     out.append("  score. A loop clearing far more gates than it improves documents is")
     out.append("  silencing its critics, which it can do by blanking the fields they read.")
 
-    for name, row in data["arms"].items():
-        if not row.get("documents"):
+    for name, pair in (data.get("paired") or {}).items():
+        out.append("")
+        if pair["mean"] is None:
+            out.append(f"  {name} against rerun: too few shared documents to compare.")
             continue
-        verdict = row.get("over_rerun")
-        if verdict is not None and verdict <= 0:
-            out.append("")
-            out.append(f"  {name} does not beat a blind re-run "
-                       f"({verdict:+.4f}). The feedback is worth nothing here;")
-            out.append("  the gain is what a second sample was worth.")
-        if row["damaged"] > row["improved"]:
+        low, high = pair["interval"]
+        out.append(f"  {name} against rerun, paired over {pair['documents']} documents:")
+        out.append(f"    mean difference {pair['mean']:+.4f}  "
+                   f"95% interval [{low:+.4f}, {high:+.4f}]")
+        out.append(f"    better on {pair['better']}, worse on {pair['worse']}, "
+                   f"tied on {pair['tied']}")
+        if not pair["resolvable"]:
+            out.append("    The interval does not exclude zero. This difference has")
+            out.append("    not been measured, only observed once -- do not quote the")
+            out.append(f"    point estimate. Resolving it needs roughly "
+                       f"{_needed(pair)} documents.")
+        elif pair["mean"] > 0:
+            out.append("    The feedback is worth something beyond a second sample.")
+        else:
+            out.append("    The feedback is worse than a second sample alone.")
+
+    for name, row in data["arms"].items():
+        if row.get("documents") and row["damaged"] > row["improved"]:
             out.append("")
             out.append(f"  {name} damaged more documents than it improved "
                        f"({row['damaged']} against {row['improved']}).")

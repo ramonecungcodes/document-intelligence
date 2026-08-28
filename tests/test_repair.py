@@ -89,12 +89,36 @@ class TestTheBlindBaseline:
     def test_feedback_worth_nothing_is_said_in_words(self):
         """Equal to the baseline is a real result and has to read as one, not as a
         positive net_delta with a quiet footnote."""
-        data = compare({
-            "rerun": arm("rerun", [(0.5, 0.7), (0.5, 0.7)]),
-            "reprompt": arm("reprompt", [(0.5, 0.7), (0.5, 0.7)]),
-        })
+        pairs = [(0.5, 0.7)] * 20
+        data = compare({"rerun": arm("rerun", pairs),
+                        "reprompt": arm("reprompt", pairs)})
         assert data["arms"]["reprompt"]["over_rerun"] == pytest.approx(0.0, abs=1e-9)
-        assert "does not beat a blind re-run" in render(data)
+        assert not data["paired"]["reprompt"]["resolvable"]
+        assert "not been measured" in render(data)
+
+    def test_an_effect_inside_its_own_error_bar_is_not_quotable(self):
+        """The finding that made this necessary: two runs of the same comparison came
+        out with opposite signs. That is not a contradiction, it is what an effect
+        smaller than its own interval looks like when you run it twice. The report has
+        to refuse the point estimate rather than print it with a caveat."""
+        rerun = arm("rerun", [(0.5, 0.5 + d) for d in
+                              (0.4, -0.3, 0.2, -0.1, 0.3, -0.4, 0.1, -0.2)])
+        guided = arm("reprompt", [(0.5, 0.5 + d) for d in
+                                  (-0.3, 0.4, -0.1, 0.3, -0.4, 0.2, -0.2, 0.15)])
+        pair = compare({"rerun": rerun, "reprompt": guided})["paired"]["reprompt"]
+        assert not pair["resolvable"]
+        assert pair["interval"][0] < 0 < pair["interval"][1]
+
+    def test_a_real_difference_is_declared_resolvable(self):
+        """The other direction must also work, or the report would call everything
+        unmeasured and be useless."""
+        rerun = arm("rerun", [(0.5, 0.5)] * 30)
+        guided = arm("reprompt", [(0.5, 0.8)] * 30)
+        pair = compare({"rerun": rerun, "reprompt": guided})["paired"]["reprompt"]
+        assert pair["resolvable"]
+        assert pair["mean"] == pytest.approx(0.3, abs=1e-4)
+        assert "worth something beyond a second sample" in render(
+            compare({"rerun": rerun, "reprompt": guided}))
 
     def test_without_a_baseline_the_report_says_the_gain_is_unattributable(self):
         data = compare({"reprompt": arm("reprompt", [(0.5, 0.9)])})
