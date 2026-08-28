@@ -5,6 +5,12 @@
     selftest   score the ground truth against itself; must come out at 1.000
     calibrate  ask whether the confidence is real, and where the floor belongs
 
+`calibrate --against extraction` is the one worth quoting: it asks whether confidence
+predicts the fields coming back right, which is what a floor is really deciding.
+`--against classification` asks only whether the type was named correctly, and a
+pipeline can be excellent at that while the documents it types confidently still
+extract badly.
+
 Usage:
     python -m eval.cli score --predictions preds.jsonl
     python -m eval.cli score --predictions preds.jsonl --only invoices --format json
@@ -254,6 +260,59 @@ def _truth_labels(corpus_root: str, only=None) -> dict:
     return labels
 
 
+def extraction_observations(args, score):
+    """Confidence against how well the document actually extracted.
+
+    This is the join Phase 5 exists for. Whether the classifier named the right type is
+    not what a floor decides -- a floor decides whether a person has to look at the
+    document, and that turns on whether its *fields* came back right. The two questions
+    can disagree in both directions: a correctly typed fax whose text is unreadable
+    extracts badly, and a misfiled purchase order can still yield most of its fields
+    because an invoice schema and a PO schema overlap heavily.
+
+    The outcome is the document's field accuracy, not a pass/fail. Choosing a bar here
+    would put a number nobody could see in front of every figure downstream.
+
+    A failed extraction is dropped rather than scored zero, and that is deliberate: a
+    crash and an extractor that ran and got everything wrong are different events, and
+    calling one the other would let an outage read as a model regression. They are
+    counted and reported instead.
+    """
+    from route import signals as signals_mod
+
+    rows = signals_mod.read(args.signals)
+    if not rows:
+        raise SystemExit(
+            f"no signals beside {args.signals}.\n"
+            f"  Expected {signals_mod.path_for(args.signals)}, which "
+            f"`extract.cli run --type-from classifier` writes.")
+    if not os.path.exists(args.signals):
+        raise SystemExit(f"predictions file not found: {args.signals}")
+    only = [t.strip() for t in args.only.split(",") if t.strip()] or None
+    graded = scoring.per_document(args.corpus, scoring.load_records(args.signals), only)
+
+    failed = ungraded = 0
+    for key, row in sorted(rows.items()):
+        outcome = graded.get(key)
+        if outcome is None:
+            ungraded += 1
+            continue
+        if outcome["failed"] or outcome["field_accuracy"] is None:
+            failed += 1
+            continue
+        classifier = row.get("classifier") or {}
+        answer = classifier.get("withheld") or classifier.get("doc_type") or ""
+        score.add(classifier.get("confidence"), outcome["field_accuracy"],
+                  _profile_of(key), truth=outcome["doc_type"], answer=answer)
+    if failed:
+        print(f"  {failed} extractions failed and are not scored; a crash is not a "
+              f"wrong answer", file=sys.stderr)
+    if ungraded:
+        print(f"  {ungraded} documents in the signals file have no graded extraction; "
+              f"skipped", file=sys.stderr)
+    return score
+
+
 def observations(args):
     """Build the decision set from whichever artifact was named.
 
@@ -264,7 +323,11 @@ def observations(args):
     record, on whatever corpus was actually run. They answer different questions and
     both are worth asking, which is why neither is the default.
     """
-    score = calibration.CalibrationScore()
+    against = getattr(args, "against", "classification")
+    score = calibration.CalibrationScore(outcome_of=against,
+                                         error_below=args.error_below)
+    if against == "extraction":
+        return extraction_observations(args, score)
     if args.report:
         with open(args.report, encoding="utf-8") as handle:
             report = json.load(handle)
@@ -345,6 +408,15 @@ def main(argv=None):
                              "what the pipeline knew while deciding")
     cal.add_argument("--corpus", default=CORPUS_ROOT)
     cal.add_argument("--only", default="")
+    cal.add_argument("--against", default="classification",
+                     choices=["classification", "extraction"],
+                     help="what the outcome measures: whether the type was right, or "
+                          "how much of the document extracted correctly. The second "
+                          "needs --signals. Default: %(default)s")
+    cal.add_argument("--error-below", type=float, default=1.0, dest="error_below",
+                     help="a document counts as an error when its outcome is under "
+                          "this. 1.0 means every graded field has to be right "
+                          "(default: %(default)s)")
     cal.add_argument("--target", type=float, default=0.99,
                      help="the accuracy a floor has to hold (default: %(default)s)")
     cal.add_argument("--format", default="table", choices=["table", "json"])
@@ -354,6 +426,11 @@ def main(argv=None):
     only = [s.strip() for s in args.only.split(",") if s.strip()] or None
 
     if args.command == "calibrate":
+        if args.against == "extraction" and not args.signals:
+            # A classifier report holds no extractions, so this combination has no
+            # answer rather than a degraded one.
+            parser.error("--against extraction needs --signals: a classifier report "
+                         "records what the type was, not what the fields came back as")
         score = observations(args)
         data = score.to_dict(args.target)
         if args.format == "json":

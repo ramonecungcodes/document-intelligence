@@ -144,3 +144,60 @@ class TestMissingConfidence:
 
     def test_nothing_to_score_renders_rather_than_raising(self):
         assert "nothing to score" in render(CalibrationScore())
+
+
+class TestContinuousOutcomes:
+    """A document is not right or wrong; it is 24 fields of which 22 are right."""
+
+    def test_a_bool_is_the_degenerate_continuous_case(self):
+        """One code path for both, so the classification curve and the extraction
+        curve cannot drift into meaning different things."""
+        binary = score_of([(0.9, True), (0.8, False)])
+        same = CalibrationScore()
+        same.add(0.9, 1.0)
+        same.add(0.8, 0.0)
+        assert binary.to_dict()["accuracy"] == same.to_dict()["accuracy"]
+        assert binary.brier() == same.brier()
+
+    def test_accuracy_is_the_mean_outcome(self):
+        score = CalibrationScore(outcome_of="extraction")
+        for value in (1.0, 0.5, 0.75, 0.25):
+            score.add(0.9, value)
+        assert score.to_dict()["accuracy"] == pytest.approx(0.625)
+
+    def test_the_error_bar_is_strict_by_default(self):
+        """At 1.0 a document is an error unless every graded field is right. A looser
+        bar would make the error column depend on a number chosen in the scorer rather
+        than on anything measured."""
+        score = CalibrationScore(outcome_of="extraction")
+        score.add(0.9, 0.99)
+        score.add(0.9, 1.0)
+        assert score.to_dict()["errors"] == 1
+        loose = CalibrationScore(outcome_of="extraction", error_below=0.95)
+        loose.add(0.9, 0.99)
+        loose.add(0.9, 1.0)
+        assert loose.to_dict()["errors"] == 0
+
+
+class TestTheConfound:
+    def test_a_pooled_curve_can_invert_what_every_group_says(self):
+        """The finding this slice was added for, reduced to its arithmetic.
+
+        Two types. Within each, confidence and outcome move together. Pooled, they move
+        apart -- because the type the model is surest about is the type that extracts
+        worst, and the aggregate averages across the variable driving both. A tool that
+        reported only the pooled number would hand you 'the model is broken' when the
+        answer is 'you are looking at two populations'.
+        """
+        score = CalibrationScore(outcome_of="extraction")
+        for confidence, outcome in ((0.99, 0.84), (0.98, 0.82)):
+            score.add(confidence, outcome, truth="forms")
+        for confidence, outcome in ((0.87, 0.98), (0.86, 0.97)):
+            score.add(confidence, outcome, truth="invoices")
+
+        data = score.to_dict()
+        assert data["mean_gap"] > 0                      # pooled: overconfident
+        by_truth = {r["truth"]: r for r in data["by_truth"]}
+        assert by_truth["forms"]["mean_confidence"] > by_truth["invoices"]["mean_confidence"]
+        assert by_truth["forms"]["outcome"] < by_truth["invoices"]["outcome"]
+        assert "Read the rows, not the total." in render(score)

@@ -210,6 +210,57 @@ def score_detection(pairs: list) -> DetectionScore:
     return detection
 
 
+# --------------------------------------------------------------- per document
+def per_document(corpus_root: str, predictions: list, only=None) -> dict:
+    """file -> how well this one document extracted.
+
+    The aggregate report cannot answer this. It sums every field into slice buckets,
+    which is the right shape for "how good is the extractor" and the wrong one for
+    "was *this* document right" -- and the second question is what a confidence floor
+    is actually deciding. A floor exists to send a document to a person, so the outcome
+    it has to be calibrated against is per document.
+
+    Each document is scored into its own fresh bucket, using the same `score_document`
+    the aggregate uses. Re-implementing the grading here to get one number out of it is
+    how the two would come to disagree, and the disagreement would be invisible: both
+    would look like plausible accuracies.
+
+    A failed extraction is reported with `failed` set and no accuracy. It is not a
+    zero: zero is what an extractor that ran and got everything wrong scores, and a
+    crash is a different event from a wrong answer. Calling one the other would let an
+    outage look like a model regression.
+    """
+    corpus = load_corpus(corpus_root, only)
+    by_file = {}
+    for record in predictions:
+        if "file" in record:
+            by_file[str(record["file"]).replace("\\", "/")] = record
+
+    out = {}
+    for stem, records in corpus.items():
+        spec = doctypes.for_label_file(stem)
+        if spec is None:
+            continue
+        for truth in records:
+            key = str(truth.get("file", "")).replace("\\", "/")
+            predicted = by_file.get(key)
+            if predicted is None:
+                continue
+            bucket = SliceScore(name=key, dimension="document")
+            bucket.docs = 1
+            score_document(predicted, truth, spec, bucket)
+            n, match, exact, blank = bucket.totals()
+            out[key] = {
+                "doc_type": stem,
+                "failed": bool(bucket.failed),
+                "fields_graded": n,
+                "field_accuracy": (round(match / n, 4) if n else None),
+                "field_exact": (round(exact / n, 4) if n else None),
+                "blank_fields": blank,
+            }
+    return out
+
+
 # ------------------------------------------------------------------ entry point
 def score(corpus_root: str, predictions: list, only=None, provenance=None) -> ScoreReport:
     corpus = load_corpus(corpus_root, only)

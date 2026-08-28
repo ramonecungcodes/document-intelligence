@@ -45,19 +45,31 @@ def _rate(numerator: int, denominator: int):
 
 @dataclass
 class Observation:
-    """One decision, and whether it was right.
+    """One decision, and how well it turned out.
 
-    `confidence` is what the classifier said; `correct` compares what it was going to
-    answer -- withheld or not -- against the truth. Abstention is a policy applied on
-    top of these, not a property of them, which is what lets one set of observations
-    answer questions about every threshold rather than only the one that happened to be
-    in force during the run.
+    `outcome` is in 0..1 and is deliberately not a boolean. Classification is
+    right or wrong and passes 1.0 or 0.0, but the question a floor really decides is
+    whether to send a *document* to a person, and a document is not right or wrong --
+    it is 24 fields of which 22 are right. Forcing that to a boolean means inventing a
+    bar ("correct if 95% of fields are"), and the bar would then be doing work nobody
+    could see. Keeping it continuous means the reliability diagram compares confidence
+    against the share of the document that survived, which is the comparison a person
+    reviewing it cares about.
+
+    `confidence` is what the classifier said. Abstention is a policy applied on top of
+    these, not a property of them, which is what lets one set of observations answer
+    questions about every threshold rather than only the one in force during the run.
     """
     confidence: float
-    correct: bool
+    outcome: float
     profile: str = "clean"
     truth: str = ""
     answer: str = ""
+
+    @property
+    def correct(self) -> bool:
+        """Fully right. Used only where a count of errors is needed, never in a mean."""
+        return self.outcome >= 1.0
 
 
 @dataclass
@@ -69,15 +81,32 @@ class CalibrationScore:
     # averaging over the ones that do while silently dropping the rest describes a
     # different pipeline from the one that ran.
     unscored: int = 0
+    # What counts as an error when the outcome is continuous. At 1.0 a document is an
+    # error unless every graded field is right, which is the strict reading and the
+    # right default -- a looser bar makes the error column depend on a number chosen
+    # here rather than on anything measured. Loosen it deliberately, per question.
+    error_below: float = 1.0
+    # What the outcome measures, carried into the report so a curve can never be read
+    # against the wrong question.
+    outcome_of: str = "classification"
 
-    def add(self, confidence, correct: bool, profile: str = "clean",
+    def add(self, confidence, outcome, profile: str = "clean",
             truth: str = "", answer: str = "") -> None:
-        if confidence is None:
+        """`outcome` is a bool for a right/wrong decision or a 0..1 share of a document.
+
+        Both go through unchanged. A bool is just the degenerate continuous case, and
+        having one path means the classification curve and the extraction curve cannot
+        drift into meaning different things.
+        """
+        if confidence is None or outcome is None:
             self.unscored += 1
             return
         self.observations.append(
-            Observation(float(confidence), bool(correct), profile or "clean",
+            Observation(float(confidence), float(outcome), profile or "clean",
                         truth, answer))
+
+    def _errors(self, rows) -> int:
+        return sum(1 for r in rows if r.outcome < self.error_below)
 
     def __len__(self) -> int:
         return len(self.observations)
@@ -99,14 +128,17 @@ class CalibrationScore:
             buckets[index].append(row)
         out = []
         for index, bucket in enumerate(buckets):
-            correct = sum(1 for r in bucket if r.correct)
             out.append({
                 "low": round(index / BINS, 2),
                 "high": round((index + 1) / BINS, 2),
                 "n": len(bucket),
                 "mean_confidence": (round(sum(r.confidence for r in bucket)
                                           / len(bucket), 4) if bucket else None),
-                "accuracy": _rate(correct, len(bucket)),
+                # The mean outcome, which for a right/wrong decision is exactly the
+                # hit rate and for a document is the share of its fields that survived.
+                "accuracy": (round(sum(r.outcome for r in bucket) / len(bucket), 4)
+                             if bucket else None),
+                "errors": self._errors(bucket),
             })
         return out
 
@@ -145,7 +177,7 @@ class CalibrationScore:
         rows = self.observations if rows is None else rows
         if not rows:
             return None
-        return round(sum((r.confidence - r.correct) ** 2 for r in rows) / len(rows), 4)
+        return round(sum((r.confidence - r.outcome) ** 2 for r in rows) / len(rows), 4)
 
     # ------------------------------------------------------------ coverage curve
 
@@ -161,24 +193,23 @@ class CalibrationScore:
         rows = self.observations if rows is None else rows
         if not rows:
             return []
-        base = _rate(sum(1 for r in rows if r.correct), len(rows))
+        base = round(sum(r.outcome for r in rows) / len(rows), 4)
         if thresholds is None:
             thresholds = [i / 20 for i in range(21)]
         out = []
         for threshold in thresholds:
             answered = [r for r in rows if r.confidence >= threshold]
-            wrong = sum(1 for r in answered if not r.correct)
-            # Errors caught: wrong answers that fell below the floor. That is what the
+            declined = [r for r in rows if r.confidence < threshold]
+            # Errors caught: bad answers that fell below the floor. That is what the
             # abstentions bought, and it belongs beside what they cost.
-            caught = sum(1 for r in rows
-                         if r.confidence < threshold and not r.correct)
             out.append({
                 "threshold": round(threshold, 4),
                 "answered": len(answered),
                 "coverage": _rate(len(answered), len(rows)),
-                "accuracy": _rate(len(answered) - wrong, len(answered)),
-                "errors": wrong,
-                "errors_caught": caught,
+                "accuracy": (round(sum(r.outcome for r in answered) / len(answered), 4)
+                             if answered else None),
+                "errors": self._errors(answered),
+                "errors_caught": self._errors(declined),
                 "baseline_accuracy": base,
             })
         return out
@@ -207,13 +238,33 @@ class CalibrationScore:
             groups[row.profile].append(row)
         return dict(groups)
 
+    def by_truth(self) -> dict:
+        """Grouped by what the document actually is.
+
+        This slice exists because of what it found. Against extraction, confidence and
+        outcome came out *anti*-correlated overall -- the most confident bin extracted
+        worst -- and that reads as a broken model until the types are separated, at
+        which point it is a confound: the classifier is surest about the types that
+        happen to extract worst, and the aggregate curve is averaging across a variable
+        that drives both. A pooled number can be negative while every group inside it
+        is flat, and a tool that only reports the pooled one hands you the wrong
+        diagnosis with no way to see it.
+        """
+        groups = defaultdict(list)
+        for row in self.observations:
+            groups[row.truth or "unlabelled"].append(row)
+        return dict(groups)
+
     def to_dict(self, target_accuracy: float = 0.99) -> dict:
         rows = self.observations
-        correct = sum(1 for r in rows if r.correct)
         out = {
             "documents": len(rows),
             "unscored": self.unscored,
-            "accuracy": _rate(correct, len(rows)),
+            "outcome_of": self.outcome_of,
+            "error_below": self.error_below,
+            "errors": self._errors(rows),
+            "accuracy": (round(sum(r.outcome for r in rows) / len(rows), 4)
+                         if rows else None),
             "mean_confidence": (round(sum(r.confidence for r in rows) / len(rows), 4)
                                 if rows else None),
             "ece": self.expected_calibration_error(),
@@ -224,18 +275,27 @@ class CalibrationScore:
             "target_accuracy": target_accuracy,
             "operating_point": self.operating_point(target_accuracy),
             "profiles": [],
+            "by_truth": [],
         }
         # Overconfidence is the direction that matters, and only the signed gap shows
         # it: a model 0.1 under and a model 0.1 over have the same ECE and opposite
         # consequences, because only one of them routes its errors past a floor.
         out["mean_gap"] = (round(out["mean_confidence"] - out["accuracy"], 4)
                            if rows else None)
+        for label, group in sorted(self.by_truth().items()):
+            out["by_truth"].append({
+                "truth": label,
+                "documents": len(group),
+                "outcome": round(sum(r.outcome for r in group) / len(group), 4),
+                "mean_confidence": round(sum(r.confidence for r in group)
+                                         / len(group), 4),
+                "errors": self._errors(group),
+            })
         for profile, group in sorted(self.by_profile().items()):
-            hits = sum(1 for r in group if r.correct)
             out["profiles"].append({
                 "profile": profile,
                 "documents": len(group),
-                "accuracy": _rate(hits, len(group)),
+                "accuracy": round(sum(r.outcome for r in group) / len(group), 4),
                 "mean_confidence": round(sum(r.confidence for r in group)
                                          / len(group), 4),
                 "ece": self.expected_calibration_error(group),
@@ -251,7 +311,11 @@ def _fmt(value, width=8):
 
 def render(score: CalibrationScore, target_accuracy: float = 0.99) -> str:
     d = score.to_dict(target_accuracy)
-    out = ["", "CALIBRATION  -  is the confidence real", ""]
+    against = d.get("outcome_of", "classification")
+    # The heading names what the outcome is. The same confidence against a different
+    # outcome is a different claim, and a table that does not say which is being made
+    # is one somebody will quote for the other.
+    out = ["", f"CALIBRATION  -  confidence against {against}", ""]
     out.append(f"  decisions            {d['documents']:>8}")
     if d["unscored"]:
         out.append(f"  no confidence given  {d['unscored']:>8}   (not scored below)")
@@ -259,7 +323,10 @@ def render(score: CalibrationScore, target_accuracy: float = 0.99) -> str:
         out.append("")
         out.append("  nothing to score.")
         return "\n".join(out)
-    out.append(f"  accuracy            {_fmt(d['accuracy'])}")
+    label = ("accuracy" if against == "classification" else "mean field accuracy")
+    out.append(f"  {label:<19}{_fmt(d['accuracy'])}")
+    out.append(f"  documents wrong      {d['errors']:>8}   "
+               f"(outcome under {d['error_below']:.2f})")
     out.append(f"  mean confidence     {_fmt(d['mean_confidence'])}")
     gap = d["mean_gap"]
     if gap is not None:
@@ -312,6 +379,25 @@ def render(score: CalibrationScore, target_accuracy: float = 0.99) -> str:
         out.append(f"  No floor reaches {d['target_accuracy']:.0%} accuracy. This model "
                    f"cannot be routed to that standard;")
         out.append("  its errors are not underneath its correct answers.")
+
+    rows = d.get("by_truth") or []
+    if len(rows) > 1:
+        out.append("")
+        out.append("  BY DOCUMENT TYPE")
+        out.append(f"  {'type':<24}{'n':>5}{'confidence':>12}{'outcome':>10}"
+                   f"{'gap':>9}{'wrong':>7}")
+        for row in sorted(rows, key=lambda r: r["mean_confidence"], reverse=True):
+            out.append(f"  {row['truth'][:23]:<24}{row['documents']:>5}"
+                       f"{row['mean_confidence']:>12.3f}{row['outcome']:>10.3f}"
+                       f"{row['outcome'] - row['mean_confidence']:>+9.3f}"
+                       f"{row['errors']:>7}")
+        best = max(rows, key=lambda r: r["mean_confidence"])
+        worst = min(rows, key=lambda r: r["mean_confidence"])
+        if len(rows) > 1 and best["outcome"] < worst["outcome"]:
+            out.append("")
+            out.append("  The type it is surest about is the type that turns out worst,")
+            out.append("  so the pooled curve above is averaging across a variable that")
+            out.append("  drives both columns. Read the rows, not the total.")
 
     if len(d["profiles"]) > 1:
         out.append("")
