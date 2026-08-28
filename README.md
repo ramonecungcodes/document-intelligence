@@ -70,7 +70,7 @@ finishing it is knowing whether to continue.
 | **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | done |
 | **4** | Can it tell when it is wrong? Validators: arithmetic that must foot, dates that must parse, cross-field constraints that must hold. | defect precision and recall | done |
 | **5** | Is its confidence real? Calibration from independent signals rather than model self-report, and routing what fails to a person. | a calibration curve | done |
-| **6** | Can it repair itself? The bounded repair loop and tool-using extraction — the agentic pockets, arriving last because everything before them is what makes them measurable. | repair success rate | |
+| **6** | Can it repair itself? The bounded repair loop and tool-using extraction — the agentic pockets, arriving last because everything before them is what makes them measurable. | repair success rate | repair loop done; tool use deferred |
 | **7** | Does teaching it work? Teach mode and the run queue as one screen, with the knowledge pack accumulating corrections, layout profiles and learned validators. | a learning curve | |
 
 Two consequences of this order are visible in the code and worth naming.
@@ -786,6 +786,188 @@ The equivalent on degraded documents needs a re-run.
 
 **Nothing consumes the queue.** `route.cli apply` writes it; no interface reads it, and
 no correction flows back. That is Phase 7.
+
+## Phase 6: can it repair itself
+
+No. And the useful part is how far the no extends, and what it turned out to be made
+of.
+
+### The scorer was written first, and adversarially
+
+Repair is the first stage here that can raise its own score by making documents worse.
+It is triggered by complaints, so the obvious success metric is "did the complaints
+stop" — and the cheapest way to stop an arithmetic complaint is to return an empty
+`tax_amount`. Every dashboard would show it working.
+
+So `eval/repair.py` was written and committed before any loop existed:
+
+**Success is measured against the corpus labels, never against the gates.** Gate
+clearance is still reported, next to the real number, because the distance between them
+is the diagnostic for the loop silencing its critics.
+
+**`damaged` sits beside `improved` everywhere**, with a Wilson interval, because a rate
+observed on forty documents is an estimate that reads like a fact.
+
+**A crashed call leaves the document at `before`**, never at zero. An outage must not
+read as a damaging loop.
+
+### The baseline that made the difference
+
+Two arms, plus an explicit `no_repair` control:
+
+    no_repair    the original extraction, untouched
+    rerun        the IDENTICAL request again — no complaints, no previous answer
+    reprompt     the same request with the complaints quoted back
+
+`rerun` is the one that mattered. The extractor is sampled, so a second request improves
+some documents by luck that *any* repair inherits for free. Without that arm, a guided
+repair reporting `+0.048` would look like the feedback working when it is mostly the
+sampling temperature.
+
+Every arm starts from the identical frozen extraction, so no extraction variance enters
+before the experiment starts.
+
+### Clean documents: an effect smaller than its own error bar
+
+Sixty-three flagged documents:
+
+| arm | net | better | worse | gates cleared |
+|---|---|---|---|---|
+| `rerun` | `+0.040` | 17 | 1 | 43 |
+| **`reprompt`** | **`+0.048`** | 22 | 0 | 50 |
+
+Paired: `+0.0082`, 95% interval `[-0.0060, +0.0224]`. The interval includes zero, so the
+report refuses the point estimate and says roughly how many documents would settle it.
+
+Three runs of this same comparison produced `-0.007`, `+0.011` and `+0.008`. That is not
+a contradiction — it is what an effect smaller than its own error bar looks like when
+you run it three times. Only the last has an interval attached and only it is quotable.
+
+The guided arm also changes **nothing on 53 of 63 documents**. Whatever it is worth
+lives in ten.
+
+### Degraded documents: repair makes them worse
+
+Two hundred documents, replicated twice:
+
+| arm | net | better | worse |
+|---|---|---|---|
+| `rerun` | `-0.037` | 5 | 66 |
+| `reprompt` | `-0.029` | 4 | 56 |
+
+Guided against blind: `+0.0087`, cluster interval `[+0.0017, +0.0160]` over 113 source
+documents — resolvable. So the guidance genuinely beats resampling, **and both arms
+leave documents worse than they found them.** "Beats the baseline, interval excludes
+zero" is the quotable line and it means *does less damage*. The renderer now prints a
+NET-NEGATIVE banner above the paired verdict so the two cannot be read apart.
+
+Intervals are a cluster bootstrap over **source documents**, not rows.
+`claim_1__fax`, `__light` and `__photo` are three photographs of one page; resampling
+them independently pretends there is three times more information than there is. That is
+the same mistake, in statistics, that document-level holdout made in Phase 3.
+
+### The gates went quiet on the documents that got worse
+
+Aggregate totals prove nothing here — two disjoint groups of 52 give identical counts and
+mean something entirely different. The per-document join:
+
+| `reprompt` | damaged | improved | unchanged |
+|---|---|---|---|
+| **gates cleared** | **31** | 2 | 16 |
+| gates still firing | 25 | 2 | 124 |
+
+`55.4%` of damaged documents cleared their gates against `12.5%` of the rest — a risk
+ratio of `4.43`. The blind arm shows the same pattern at `2.90`, so it is not the
+feedback's fault: re-asking a model about unreadable text produces answers that satisfy
+validators and contradict the document.
+
+A "share of flagged documents resolved" metric would report `26%` here and be describing
+harm.
+
+### No budget rescues it
+
+150 documents, both arms, three attempts each — 900 model calls. Guided arms iterate
+(attempt N sees attempt N-1's record and complaints recomputed against it); blind arms
+repeat the identical request. Arms are only ever compared at **equal call counts**,
+because three guided attempts against one blind sample prices the extra sampling as
+though it were the guidance.
+
+| arm | 1 call | 2 calls | 3 calls |
+|---|---|---|---|
+| `rerun` | `-0.0273` | `-0.0246` | `-0.0227` |
+| `reprompt` | `-0.0164` | `-0.0171` | `-0.0163` |
+
+Both flat within their own intervals. **Iteration buys nothing** — the guided arm's
+entire value is its first attempt. The blind arm being flat is the correct null: without
+a selector the third independent sample is no better than the first, and the only
+selector available is the validators.
+
+The guided advantage is resolvable at one call (`+0.0108`) and spans zero at two and
+three, as the blind arm drifts upward inside its own noise.
+
+### What repair actually does, field by field
+
+The document-level delta cannot see the mechanism. Field transitions on the same 200
+documents:
+
+| | `rerun` | `reprompt` |
+|---|---|---|
+| fields repaired | 18 | 6 |
+| fields damaged | 93 | **57** |
+| net | `-75` | `-51` |
+| fields **invented** | 55 | 53 |
+
+And then the finding that reframes the whole phase. Of `reprompt`'s 57 damaged fields,
+**48 are one field**: `business_name` on the W-9 variant. Forty-eight of the sixty W-9s
+in the set legitimately have no business name — and repair invented one on **all
+forty-eight**. A hundred per cent failure on one field, in both arms.
+
+The field is correctly declared `optional`, and the prompt says outright *"Do not invent
+a value the document does not contain. If a field genuinely is not on the page, leaving
+it empty is correct."* Neither helped. A named slot in a schema exerts more pressure on
+a second pass than an instruction not to fill it.
+
+So "repair is net-negative on degraded documents" is true and misleading. Most of the
+damage is one field failing one way, and the general claim is much weaker than the
+headline suggests. That is only visible because transitions are counted per field;
+84% of the damage was hiding inside a document-level average.
+
+The guided arm is also dramatically more careful with values it already had:
+`right_to_wrong` 2 against the blind arm's 18, `right_to_missed` 2 against 20. The
+guidance protects correct answers. It does not stop invention, because that is the same
+field failing the same way regardless of what the prompt says.
+
+### The shape, which mirrors Phase 5
+
+| corpus | baseline accuracy | repair worth |
+|---|---|---|
+| clean | `0.881` | `+0.040` |
+| degraded | `0.303` | `-0.037` |
+
+Same operation, opposite sign. Phase 5 found that routing helps least where it is needed
+most; Phase 6 finds that repair actively hurts there. The reason is the same: a second
+opinion on ruined OCR is not a repair, and the first answer was partly right by luck
+that resampling throws away.
+
+### What this phase did not close
+
+**Tool-using extraction was not built.** The phase's wording covers the bounded repair
+loop *and* tool use; only the loop exists. The loop is what produces the phase's stated
+number, so the phase closes on its deliverable, and tool use moves to v2 rather than
+being quietly folded in.
+
+**One field is doing most of the work and has not been fixed.** `business_name` needs
+either a prompt that resists a named slot or an extraction shape where "absent" is the
+default rather than a value to be argued out of. Fixing it would change the headline.
+
+**Gate-code transitions are not counted.** `A,B -> A` and `A,B -> C` are numerically
+identical today and mean different things — the second cleared two complaints and
+introduced a new one.
+
+**The runtime scorer does not exist.** These runs produce exactly the per-field rows a
+calibrated correctness model would train on, and Phase 6's result argues for a second
+one: low confidence does not imply repairable, so predicting *whether repair will help*
+is a different question from predicting whether an extraction is wrong.
 
 ## Why the corpus comes first
 
