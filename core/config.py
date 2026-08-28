@@ -24,7 +24,7 @@ DEFAULT_PATHS = ("di.toml", "/app/di.toml")
 # the document says, and it decides who sees the answer. Added in Phase 5, which is
 # where there was finally something measured to route on.
 SLOTS = ("source", "normalizer", "splitter", "classifier", "extractor", "validator",
-         "router", "sink")
+         "repairer", "router", "sink")
 
 
 @dataclass
