@@ -63,6 +63,13 @@ Your previous answer:
 class Reprompt(Repairer):
     """A second extraction that has been told what looked wrong."""
 
+    # Attempt N sees attempt N-1's answer and the complaints recomputed against it.
+    # That is the arm's actual claim -- that saying what is wrong helps -- and it is
+    # only testable past one attempt if the conversation continues. It also means
+    # damage compounds: an attempt that made the record worse hands that worse record
+    # to the next one, which the budget curve will show if it happens.
+    ITERATIVE = True
+
     SETTINGS = (
         Setting("max_attempts", int, default=1,
                 help="model calls per document. Kept equal to the rerun baseline by "

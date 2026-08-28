@@ -106,14 +106,44 @@ def _normalizer_for(config, name, corpus):
                  overrides={"corpus": corpus} if "corpus" in declares else None)
 
 
-def run_arm(name, rows, config, args, validators, policy):
-    """One arm over every candidate. Returns a RepairScore."""
+def _merge(original: dict, produced: dict, spec, variant: str) -> dict:
+    """The repaired record, keeping the harness's own keys and the file identity.
+
+    Only the model's fields are replaced. A repair that dropped `file` would silently
+    fail to join against the corpus and be scored as a missing document rather than a
+    bad one.
+    """
+    merged = {k: v for k, v in original.items()
+              if k.startswith("_") or k == "file"}
+    merged["doc_type"] = spec.name
+    merged.update(produced)
+    if variant and spec.variant_key:
+        merged[spec.variant_key] = variant
+    return merged
+
+
+def run_arm(name, rows, config, args, validators, policy, budget: int = 1):
+    """One arm over every candidate, scored after every attempt.
+
+    Returns {attempts_used: RepairScore}, one entry per budget from 1 to `budget`, so
+    the curve is measured rather than interpolated between its endpoints. The two arms
+    are run at the same budgets over the same documents; otherwise a comparison prices
+    three chances to sample a better answer against one, rather than pricing the
+    guidance.
+
+    Guided arms iterate -- attempt N sees attempt N-1's record and the complaints
+    recomputed against it. Blind arms repeat the identical original request. Which one
+    a repairer is comes from its ITERATIVE flag, not from anything here.
+    """
     import repair
     from route import features as feature_mod
     from extract import backends
 
-    repairer = repair.build(name, config)
-    print(f"  arm {name}: {repairer.describe()}")
+    repairer = repair.build(name, config, overrides={"max_attempts": 1})
+    iterative = getattr(type(repairer), "ITERATIVE", False)
+    print(f"  arm {name}: {repairer.describe()}  "
+          f"({'iterative' if iterative else 'independent samples'}), "
+          f"budgets 1..{budget}")
     backend = backends.build(config=config, plugin=args.extractor)
     normalizer = _normalizer_for(config, args.normalizer, args.corpus)
     print(f"  normalizer: {normalizer.describe()}")
@@ -121,7 +151,6 @@ def run_arm(name, rows, config, args, validators, policy):
     # Repair must re-read the page the way the original extraction did. Reading it with
     # a better engine would show up as a repair gain that a prompt had nothing to do
     # with -- the single most attributable-looking wrong number this stage can produce.
-    # The engines the predictions recorded are known, so the mismatch is checkable.
     was = {str((row["record"].get("_normalizer") or {}).get("engine") or "?")
            for row in rows}
     now = normalizer.describe().split()[0]
@@ -130,60 +159,75 @@ def run_arm(name, rows, config, args, validators, policy):
               f"is reading with {now!r}. Any gain below may be the reader, not the "
               f"repair.", file=sys.stderr)
 
-    score = scoring_repair.RepairScore(arm=name)
-    repaired_records = []
+    # records[k] is every document's answer after k attempts.
+    records = {k: [] for k in range(1, budget + 1)}
+    failures = {k: [] for k in range(1, budget + 1)}
     for index, row in enumerate(rows, 1):
         path = os.path.join(args.corpus, row["file"])
         page = normalizer.read(path)
-        context = repair.Context(
-            backend=backend, doctype=row["spec"], variant=row["variant"],
-            path=path, relative_path=row["file"], record=row["record"],
-            text=page.text, complaints=row["complaints"], normalizer=normalizer)
-        result = repairer.repair(context)
-
-        if result.changed:
-            # The repaired record keeps the file key and the harness provenance; only
-            # the model's own fields are replaced. A repair that dropped `file` would
-            # silently fail to join against the corpus and score as a missing document.
-            merged = {k: v for k, v in row["record"].items()
-                      if k.startswith("_") or k == "file"}
-            merged["doc_type"] = row["spec"].name
-            merged.update(result.record)
-            if row["variant"] and row["spec"].variant_key:
-                merged[row["spec"].variant_key] = row["variant"]
-        else:
-            merged = dict(row["record"])
-        repaired_records.append(merged)
-
+        current = row["record"]
+        complaints = row["complaints"]
+        broke = ""
+        for step in range(1, budget + 1):
+            context = repair.Context(
+                backend=backend, doctype=row["spec"], variant=row["variant"],
+                path=path, relative_path=row["file"],
+                # An iterative arm argues with its own latest answer; an independent
+                # one is handed the original every time, which is what makes its curve
+                # a sampling control rather than a second iterative arm.
+                record=current if iterative else row["record"],
+                text=page.text,
+                complaints=complaints if iterative else row["complaints"],
+                normalizer=normalizer)
+            result = repairer.repair(context)
+            if result.changed:
+                produced = _merge(row["record"], result.record, row["spec"],
+                                  row["variant"])
+                if iterative:
+                    current = produced
+                    # Recomputed against the new answer, never carried over. A prompt
+                    # complaining about a value the record no longer holds is asking
+                    # the model to fix something that is not there.
+                    signals = feature_mod.extract(current, row["spec"], row["variant"],
+                                                  validators)
+                    complaints = repair.complaints_for(
+                        current, row["spec"], row["variant"], validators,
+                        policy.decide(signals))
+            else:
+                produced = dict(current if iterative else row["record"])
+                broke = broke or (result.error or "declined")
+            records[step].append(produced)
+            failures[step].append(broke)
         if index % 10 == 0 or index == len(rows):
             print(f"    {index}/{len(rows)}")
 
-    after = scoring.per_document(args.corpus, repaired_records)
-    for row, merged in zip(rows, repaired_records):
-        graded = after.get(row["file"]) or {}
-        signals = feature_mod.extract(merged, row["spec"], row["variant"], validators)
-        gates_after = len(policy.decide(signals).reasons)
-        accuracy = graded.get("field_accuracy")
-        failed = accuracy is None
-        score.add(scoring_repair.Outcome(
-            file=row["file"],
-            before=row["before"],
-            # A repair that failed leaves the document exactly where it was. Scoring a
-            # crashed call as a ruined extraction would make an outage read as a
-            # damaging loop.
-            after=row["before"] if failed else accuracy,
-            gates_before=row["gates_before"], gates_after=gates_after,
-            attempts=1, doc_type=row["doc_type"], profile=row["profile"],
-            error="not gradable" if failed else "",
-            # Raw counts, so "did this document get better" is an integer question.
-            correct_before=row["correct_before"],
-            correct_after=(row["correct_before"] if failed
-                           else graded.get("fields_correct")),
-            fields=row["fields"],
-            # What this row is not independent of: four degradations of one page move
-            # together, and a resampling interval that ignores that is too narrow.
-            layout=row.get("layout")))
-    return score
+    scores = {}
+    for step in range(1, budget + 1):
+        score = scoring_repair.RepairScore(arm=f"{name}@{step}" if budget > 1 else name)
+        after = scoring.per_document(args.corpus, records[step])
+        for position, row in enumerate(rows):
+            graded = after.get(row["file"]) or {}
+            merged = records[step][position]
+            signals = feature_mod.extract(merged, row["spec"], row["variant"],
+                                          validators)
+            gates_after = len(policy.decide(signals).reasons)
+            accuracy = graded.get("field_accuracy")
+            ungradable = accuracy is None
+            score.add(scoring_repair.Outcome(
+                file=row["file"],
+                before=row["before"],
+                # A failed attempt leaves the document where it was. Scoring a crashed
+                # call as a ruined extraction would make an outage read as damage.
+                after=row["before"] if ungradable else accuracy,
+                gates_before=row["gates_before"], gates_after=gates_after,
+                attempts=step, doc_type=row["doc_type"], profile=row["profile"],
+                error=failures[step][position] or ("not gradable" if ungradable else ""),
+                correct_before=row["correct_before"],
+                correct_after=(row["correct_before"] if ungradable
+                               else graded.get("fields_correct")),
+                fields=row["fields"], layout=row.get("layout")))
+        scores[step] = score
+    return scores
 
 
 def main(argv=None):
@@ -202,6 +246,11 @@ def main(argv=None):
                           "be separated from what a second sample is worth")
     run.add_argument("--extractor", default="")
     run.add_argument("--normalizer", default="")
+    run.add_argument("--budget", type=int, default=1,
+                     help="model calls per document per arm. Above 1 the arms are "
+                          "scored after every attempt, giving a curve rather than two "
+                          "endpoints. Every arm gets the same budget, or the "
+                          "comparison prices extra sampling instead of the guidance")
     run.add_argument("--limit", type=int, default=0,
                      help="documents per arm. Repair is a model call each, so this is "
                           "required in practice")
@@ -227,23 +276,25 @@ def main(argv=None):
           f"{'' if args.flagged_only else ' (every document, not only flagged)'}")
 
     names = [n.strip() for n in args.arms.split(",") if n.strip()]
-    import repair as repair_pkg
-
-    budgets = {n: repair_pkg.build(n, config).max_attempts for n in names}
-    if len(set(budgets.values())) > 1:
-        # Otherwise the comparison prices three chances to sample a better answer
-        # against one, rather than pricing the feedback.
-        print(f"  WARNING: arms have different call budgets {budgets}. Any difference "
-              f"below includes the extra sampling, not only the guidance.",
-              file=sys.stderr)
+    # Budgets are equal by construction now: --budget applies to every arm and each
+    # repairer is built with max_attempts=1 so the runner owns the loop. The manifest's
+    # own max_attempts is deliberately ignored here, because an arm configured with a
+    # larger budget than the one it baselines would price extra sampling as guidance.
     if "rerun" not in names:
         print("  WARNING: no `rerun` arm. Any gain reported below includes whatever a "
               "second sample is worth and cannot be attributed to the feedback.",
               file=sys.stderr)
 
+    budget = max(1, args.budget)
+    series = {name: run_arm(name, rows, config, args, validators, policy, budget)
+              for name in names}
+
+    # Flatten to arms the scorer understands. At budget 1 the names are unchanged, so
+    # nothing about the single-attempt report moves.
     arms = {}
-    for name in names:
-        arms[name] = run_arm(name, rows, config, args, validators, policy)
+    for name, steps in series.items():
+        for step, score in steps.items():
+            arms[score.arm] = score
     # The control is free -- it is the extraction that already happened -- so it is
     # always present rather than something a caller can forget. Without it the report
     # can compare arms to each other and cannot say whether any of them should run.
@@ -251,6 +302,8 @@ def main(argv=None):
         arms["no_repair"] = scoring_repair.no_repair_arm(
             next(iter(arms.values())).outcomes)
     data = scoring_repair.compare(arms)
+    if budget > 1:
+        data["budget_curve"] = scoring_repair.budget_curve(arms, names, budget)
     slices = {}
     for name, score in arms.items():
         if len(arms) == 1:
@@ -261,6 +314,8 @@ def main(argv=None):
         sys.stdout.write(json.dumps(data, indent=1))
     else:
         print(scoring_repair.render(data, slices))
+        if data.get("budget_curve"):
+            print(scoring_repair.render_budget_curve(data["budget_curve"]))
 
     out = args.out or os.path.join(REPORTS_DIR, "repair.json")
     try:

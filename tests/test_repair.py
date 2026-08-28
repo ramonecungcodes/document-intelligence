@@ -380,3 +380,62 @@ class TestInvariants:
                       gates_after=1, correct_before=11, correct_after=12, fields=24)
         assert row.field_gain == 1
         assert row.improved and not row.damaged
+
+
+class TestBudgetsMustMatch:
+    """Comparing arms at different call counts prices sampling as guidance.
+
+    This is the easiest way to make a repair loop look like it works: give the guided
+    arm three attempts, the blind one, and report the difference as the value of the
+    feedback.
+    """
+
+    def budgeted(self):
+        return {
+            "rerun@1": arm("rerun@1", [(0.5, 0.5)] * 12),
+            "rerun@2": arm("rerun@2", [(0.5, 0.5)] * 12),
+            "reprompt@1": arm("reprompt@1", [(0.5, 0.6)] * 12),
+            "reprompt@2": arm("reprompt@2", [(0.5, 0.9)] * 12),
+        }
+
+    def test_each_arm_is_paired_with_the_blind_arm_at_its_own_budget(self):
+        data = compare(self.budgeted())
+        # reprompt@1 vs rerun@1 is +0.1; reprompt@2 vs rerun@2 is +0.4.
+        assert data["paired"]["reprompt@1"]["mean"] == pytest.approx(0.1, abs=1e-4)
+        assert data["paired"]["reprompt@2"]["mean"] == pytest.approx(0.4, abs=1e-4)
+
+    def test_the_baseline_is_not_lost_when_arms_are_budgeted(self):
+        """It was: a lookup for a bare "rerun" found nothing and the report printed
+        "baseline: none" with two perfectly good blind arms in the same dict."""
+        data = compare(self.budgeted())
+        assert data["baseline"] == "rerun"
+        assert "no blind re-run arm" not in render(data)
+
+    def test_blind_arms_are_not_compared_against_themselves(self):
+        data = compare(self.budgeted())
+        assert "rerun@1" not in data["paired"]
+        assert "rerun@2" not in data["paired"]
+
+    def test_the_curve_reports_every_budget(self):
+        from eval.repair import budget_curve, render_budget_curve
+
+        curve = budget_curve(self.budgeted(), ["rerun", "reprompt"], 2)
+        assert [r["attempts"] for r in curve["arms"]["reprompt"]] == [1, 2]
+        assert [r["attempts"] for r in curve["matched"]["reprompt"]] == [1, 2]
+        assert "equal call counts" in render_budget_curve(curve)
+
+    def test_a_curve_that_gets_worse_with_budget_says_so(self):
+        """The reading the curve exists for: extra attempts buying harm. A guided arm
+        that damages more at three calls than at one is drifting away from the
+        document, not converging on it."""
+        from eval.repair import budget_curve, render_budget_curve
+
+        arms = {
+            "rerun@1": arm("rerun@1", [(0.5, 0.5)] * 12),
+            "rerun@2": arm("rerun@2", [(0.5, 0.5)] * 12),
+            "reprompt@1": arm("reprompt@1", [(0.5, 0.7)] * 12),
+            "reprompt@2": arm("reprompt@2", [(0.5, 0.3)] * 12),
+        }
+        text = render_budget_curve(budget_curve(arms, ["rerun", "reprompt"], 2))
+        assert "WORSE at 2 calls" in text
+        assert "Cap the budget lower." in text

@@ -115,6 +115,23 @@ class Repairer:
 
     max_attempts: int = 1
 
+    # Does attempt N build on attempt N-1, or start over?
+    #
+    # This is the whole difference between the two arms once a budget is larger than
+    # one, and it has to be declared rather than inferred. A guided repairer iterates:
+    # its second attempt sees the answer its first produced and the complaints
+    # recomputed against that answer, so three attempts are a conversation. A blind
+    # re-run repeats: its second attempt is the identical original request, so three
+    # attempts are three independent samples.
+    #
+    # That makes the blind curve flat by construction, and flat is the correct null.
+    # Three samples are not better than one unless something selects among them, and
+    # the only available selector is the validators -- picking whichever attempt
+    # satisfies them is exactly the optimisation this project's scorer exists to catch.
+    # So the blind arm keeps its k-th sample, honestly, and any slope in the guided
+    # curve is what iteration bought.
+    ITERATIVE = False
+
     def describe(self) -> str:
         return f"{type(self).__name__.lower()} - up to {self.max_attempts} attempt(s)"
 
@@ -162,6 +179,11 @@ class Context:
     complaints: list = field(default_factory=list)
     normalizer: object = None
     rule_settings: dict = field(default_factory=dict)
+    # Given a fresh record, return (merged_record, complaints_against_it). Supplied by
+    # the runner, because merging harness provenance and re-running validators are its
+    # concerns -- a repairer that knew how to do either would be reaching into two
+    # stages it has no business knowing about.
+    refresh: object = None
 
 
 def build(name: str, config=None, overrides=None):

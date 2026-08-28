@@ -389,15 +389,30 @@ def compare(arms: dict) -> dict:
     corpus's actual result.
     """
     scored = {name: score.to_dict() for name, score in arms.items()}
-    baseline = scored.get("rerun")
     control = scored.get("no_repair")
 
+    def baseline_for(name):
+        """The blind arm at the SAME call budget.
+
+        Budgeted runs name their arms `reprompt@2`, so a lookup for a bare "rerun"
+        finds nothing and the report quietly loses its baseline -- which it did, and
+        printed "baseline: none" while two perfectly good blind arms sat in the same
+        dict. Comparing `reprompt@3` against `rerun@1` would have been worse than
+        losing it: that prices two extra samples as though they were the guidance.
+        """
+        if "@" in name:
+            return scored.get("rerun@" + name.split("@", 1)[1])
+        return scored.get("rerun")
+
+    any_baseline = any(n == "rerun" or n.startswith("rerun@") for n in scored)
     pairs, absolute = {}, {}
     for name, row in scored.items():
         row["over_rerun"] = None
         if not row.get("documents"):
             continue
-        if baseline and name not in ("rerun", "no_repair"):
+        baseline = baseline_for(name)
+        blind = name == "rerun" or name.startswith("rerun@")
+        if baseline and not blind and name != "no_repair":
             row["over_rerun"] = round((row["net_delta"] or 0)
                                       - (baseline["net_delta"] or 0), 4)
             pairs[name] = paired(row, baseline)
@@ -405,7 +420,7 @@ def compare(arms: dict) -> dict:
             absolute[name] = paired(row, control)
 
     return {"arms": scored,
-            "baseline": "rerun" if baseline else None,
+            "baseline": "rerun" if any_baseline else None,
             "control": "no_repair" if control else None,
             "paired": pairs,
             "absolute": absolute,
@@ -475,6 +490,121 @@ def goodhart(arm: dict) -> dict:
                  if rate_damaged and rate_intact else None),
         "lift_ci": ratio_ci,
     }
+
+
+def budget_curve(arms: dict, names, budget: int) -> dict:
+    """Each arm at each call budget, and the arms against each other at matched ones.
+
+    The comparison only means anything at equal budgets. Three guided attempts against
+    one blind sample measures the extra sampling as though it were the guidance, which
+    is the single easiest way to make a repair loop look like it works.
+
+    Two shapes worth reading off it.
+
+    Whether the guided arm *slopes*. The blind arm is expected to be flat: without a
+    selector, the third independent sample is no better than the first, and the only
+    selector available is the validators -- picking whichever attempt satisfies them is
+    the optimisation this module exists to catch. So a flat blind line is the correct
+    null and any slope in the guided one is what iteration bought.
+
+    Whether damage compounds. A guided attempt that made the record worse hands that
+    worse record to the next attempt. If the damage rate climbs with budget while the
+    net delta does not, the loop is not converging on the document, it is drifting away
+    from it, and the third call is buying harm.
+    """
+    steps = list(range(1, budget + 1))
+    out = {"budget": budget, "arms": {}, "matched": {}}
+    for name in names:
+        row = []
+        for step in steps:
+            arm = arms.get(f"{name}@{step}") or arms.get(name)
+            if arm is None:
+                continue
+            data = arm.to_dict() if isinstance(arm, RepairScore) else arm
+            row.append({
+                "attempts": step,
+                "net_delta": data.get("net_delta"),
+                "net_delta_ci": data.get("net_delta_ci"),
+                "improved": data.get("improved"),
+                "damaged": data.get("damaged"),
+                "damaged_rate": data.get("damaged_rate"),
+                "damaged_rate_ci": data.get("damaged_rate_ci"),
+                "worst_delta": data.get("worst_delta"),
+                "gates_clear": data.get("gates_clear"),
+            })
+        out["arms"][name] = row
+
+    control = arms.get("no_repair")
+    control = (control.to_dict() if isinstance(control, RepairScore) else control)
+    guided = [n for n in names if n != "rerun"]
+    for name in guided:
+        row = []
+        for step in steps:
+            a = arms.get(f"{name}@{step}") or arms.get(name)
+            b = arms.get(f"rerun@{step}") or arms.get("rerun")
+            if a is None or b is None:
+                continue
+            a = a.to_dict() if isinstance(a, RepairScore) else a
+            b = b.to_dict() if isinstance(b, RepairScore) else b
+            entry = {"attempts": step, "vs_rerun": paired(a, b)}
+            if control:
+                entry["vs_no_repair"] = paired(a, control)
+            row.append(entry)
+        out["matched"][name] = row
+    return out
+
+
+def render_budget_curve(curve: dict) -> str:
+    if not curve or not curve.get("arms"):
+        return ""
+    out = ["", "BUDGET CURVE  -  arms compared only at equal call counts", ""]
+    out.append(f"  {'arm':<12}{'calls':>7}{'net':>10}{'95% interval':>24}"
+               f"{'better':>8}{'worse':>7}{'damage':>9}{'worst':>9}")
+    for name, rows in curve["arms"].items():
+        for row in rows:
+            ci = row.get("net_delta_ci")
+            band = f"[{ci[0]:+.4f}, {ci[1]:+.4f}]" if ci else "--"
+            out.append(f"  {name:<12}{row['attempts']:>7}"
+                       f"{_fmt(row['net_delta'], 10, 4, sign=True)}{band:>24}"
+                       f"{row['improved']:>8}{row['damaged']:>7}"
+                       f"{(row['damaged_rate'] or 0):>9.1%}"
+                       f"{_fmt(row['worst_delta'], 9, sign=True)}")
+    out.append("  net is against the original extraction, so every row answers")
+    out.append("  \"was this call worth making\" rather than \"did anything change\".")
+
+    for name, rows in curve["matched"].items():
+        if not rows:
+            continue
+        out.append("")
+        out.append(f"  {name} against the blind re-run, at matched budgets")
+        for row in rows:
+            pair = row["vs_rerun"]
+            if pair.get("mean") is None:
+                continue
+            band = _interval(pair)
+            verdict = "resolvable" if pair["resolvable"] else "spans zero"
+            out.append(f"    {row['attempts']} call(s)  "
+                       f"{_fmt(pair['mean'], 9, 4, sign=True)}   {band:>22}   "
+                       f"{verdict}")
+
+    # The two readings the curve exists for, stated rather than left to the eye.
+    for name, rows in curve["arms"].items():
+        if len(rows) < 2:
+            continue
+        first, last = rows[0], rows[-1]
+        if (last["net_delta"] or 0) < (first["net_delta"] or 0) - 1e-9:
+            out.append("")
+            out.append(f"  {name} is WORSE at {last['attempts']} calls than at "
+                       f"{first['attempts']}: "
+                       f"{first['net_delta']:+.4f} -> {last['net_delta']:+.4f}.")
+            out.append("  Extra attempts are buying harm. Cap the budget lower.")
+        if (last["damaged_rate"] or 0) > (first["damaged_rate"] or 0) + 1e-9:
+            out.append(f"  {name} damage rate climbs with budget: "
+                       f"{(first['damaged_rate'] or 0):.1%} -> "
+                       f"{(last['damaged_rate'] or 0):.1%}. An attempt that made the "
+                       f"record worse")
+            out.append("  is handing that worse record to the next one.")
+    return "\n".join(out)
 
 
 def by_slice(score: RepairScore, key: str = "doc_type") -> list:

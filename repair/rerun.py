@@ -31,6 +31,10 @@ from repair.base import Repairer, register
 class Rerun(Repairer):
     """The same request, a second time."""
 
+    # Every attempt is the identical original request. Nothing carries between them,
+    # which is what makes this a control for sampling rather than for iteration.
+    ITERATIVE = False
+
     SETTINGS = (
         Setting("max_attempts", int, default=1,
                 help="how many times to re-ask. One, normally: this arm exists to "
