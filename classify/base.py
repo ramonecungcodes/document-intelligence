@@ -56,7 +56,19 @@ class Classification:
     doc_type: str                        # "" when the classifier declines to guess
     variant: str = ""                    # which field set, for a type that has several
     confidence: Optional[float] = None   # 0-1, when the classifier can say
+    margin: Optional[float] = None       # how far ahead of the runner-up. A model at
+                                         # 0.95 with nothing near it is not in the same
+                                         # state as one at 0.95 with 0.94 behind it,
+                                         # and the second probability is kept nowhere
+                                         # else, so this cannot be recovered later.
     runner_up: str = ""                  # the second-best type, if there was one
+    withheld: str = ""                   # what it would have said, when it abstained.
+                                         # Abstaining blanks `doc_type`, and without
+                                         # this the answer that was suppressed is gone
+                                         # -- so a coverage curve could only ever be
+                                         # drawn above whatever floor was in force, and
+                                         # the question of whether that floor is set
+                                         # right becomes unaskable from the artifacts.
     evidence: str = ""                   # what it matched or cited
     engine: str = ""
     seconds: float = 0.0
@@ -79,6 +91,8 @@ class Classification:
             "variant": self.variant or None,
             "confidence": self.confidence,
             "runner_up": self.runner_up or None,
+            "withheld": self.withheld or None,
+            "margin": self.margin,
             "evidence": (self.evidence[:120] or None),
             "seconds": round(self.seconds, 2) or None,
         }

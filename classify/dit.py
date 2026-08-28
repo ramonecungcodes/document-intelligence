@@ -116,14 +116,20 @@ class DocumentImage:
         # the field set, and returning only the type would leave that to the corpus.
         doc_type, variant = split_label(best)
 
+        withheld = ""
         if self.abstain_below and confidence < self.abstain_below:
             # Not a failure. Every one of this model's errors on unseen-design faxes
             # sat below 0.90, so declining here is the difference between a wrong
             # extraction schema and a document a person looks at.
-            doc_type, variant = "", ""
+            #
+            # The suppressed answer is kept rather than dropped. Whether 0.90 is the
+            # right floor is a question about the documents underneath it, and that
+            # question cannot be asked from a record that only says "declined".
+            withheld, doc_type, variant = best, "", ""
         return Classification(
-            doc_type=doc_type, variant=variant,
+            doc_type=doc_type, variant=variant, withheld=withheld,
             confidence=round(confidence, 4),
+            margin=round(confidence - probability[order[1]].item(), 4),
             runner_up=split_label(labels[order[1].item()])[0],
             evidence="page image, no text read",
             engine=f"dit:{os.path.basename(self.model_dir)}",

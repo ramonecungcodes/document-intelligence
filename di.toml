@@ -141,3 +141,28 @@ ambiguous = "invoice|purchase_order"
 # scores exactly the same 0.944. The extra escalations were all documents the image
 # model was going to get right anyway, and each one is an OCR pass.
 escalate_below = 0.0
+
+# The floor that actually governs this pipeline, and it is currently off.
+#
+# `[classifiers.dit] abstain_below = 0.9` above does nothing while the cascade is the
+# chosen classifier: the cascade builds its members with abstention disabled on
+# purpose, because a primary that declines internally hands back no answer and no
+# runner-up, and the escalation then has nothing to arbitrate. So the floor has to be
+# stated here or it is not stated at all. It read as set for as long as it was not.
+#
+# Left at zero until it can be set from a cascade run rather than a DiT one. The
+# numbers that will decide it, from `eval.cli calibrate` on the design holdout, are
+# DiT's alone -- and they already say the 0.9 above was the wrong number:
+#
+#   holdout      floor for zero errors   coverage at that floor   at 0.90
+#   source        0.75                    0.826                    0.736
+#   design        0.85                    0.472                    0.438
+#
+# On the split that does not let the model recognise a page design it was trained on,
+# a 0.90 floor answers 43.8% of documents and 0.85 answers 47.2% -- both with nothing
+# wrong. Five points of coverage were being given away for no error reduction.
+#
+# The cascade's own floor cannot be assumed equal to either row. It reports DiT's
+# confidence against an answer the text arbiter may have corrected, so its confidence
+# is attached to a better answer than the number was measured on.
+abstain_below = 0.0
