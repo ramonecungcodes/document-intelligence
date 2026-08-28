@@ -140,6 +140,18 @@ def main(argv=None):
         command.add_argument("--no-validators", action="store_true",
                              dest="no_validators")
         command.add_argument("--out", default=None)
+        if name == "apply":
+            command.add_argument(
+                "--explore", type=float, default=0.0,
+                help="share of ACCEPTED documents to review anyway, 0-1. Costs "
+                     "reviewer time on documents the policy trusts, and buys the only "
+                     "unbiased labels the system will have. Set it before collecting "
+                     "review history; it cannot be applied retroactively")
+            command.add_argument(
+                "--seed", default="di",
+                help="exploration is hashed, not drawn, so the same documents are "
+                     "audited on every run over the same corpus. Change this to draw "
+                     "a different sample")
         if name == "score":
             command.add_argument("--format", default="table",
                                  choices=["table", "json"])
@@ -148,24 +160,52 @@ def main(argv=None):
     policy, rows = rows_for(args)
 
     if args.command == "apply":
-        queue = [{
-            "file": row["file"],
-            "doc_type": row["truth"],
-            "profile": row["profile"],
-            "why": row["decision"].to_dict()["why"],
-            "reasons": [r.to_dict() for r in row["decision"].reasons],
-            # Every signal, not only the ones that fired. A reviewer disagreeing with a
-            # gate needs to see what the others said, and a queue that shows only the
-            # triggering value cannot be argued with.
-            "signals": row["signals"],
-        } for row in rows if row["decision"].review]
+        from route import review as review_mod
+
+        queue, audited = [], 0
+        for row in rows:
+            flagged = row["decision"].review
+            # A share of the documents the policy accepted goes to a person anyway.
+            # This is the only source of labels for the region above the floor, and
+            # without it every label describes a document the current policy already
+            # distrusted -- so a scorer fitted on the history would learn to reproduce
+            # the policy rather than to predict correctness, and would score well doing
+            # it, because it would never be shown the documents it gets wrong.
+            sampled = (not flagged
+                       and review_mod.explore(row["file"], args.explore, args.seed))
+            if not flagged and not sampled:
+                continue
+            audited += bool(sampled)
+            queue.append({
+                "file": row["file"],
+                "doc_type": row["truth"],
+                "profile": row["profile"],
+                # Why this document reached a person. Unrecoverable afterwards: an
+                # audited document that happens to look like a flagged one is
+                # indistinguishable without this, and the bias is then permanent.
+                "selection": (review_mod.BY_EXPLORATION if sampled
+                              else review_mod.BY_GATE),
+                "why": row["decision"].to_dict()["why"],
+                "reasons": [r.to_dict() for r in row["decision"].reasons],
+                # Every signal, not only the ones that fired. A reviewer disagreeing
+                # with a gate needs to see what the others said, and a queue that shows
+                # only the triggering value cannot be argued with. It is also what makes
+                # the row trainable later: these are the values as they stood when the
+                # decision was made, not what recomputing them today would give.
+                "signals": row["signals"],
+            })
         out = args.out or os.path.join(REPORTS_DIR, "review-queue.jsonl")
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         with open(out, "w", encoding="utf-8", newline="\n") as handle:
             for entry in queue:
                 handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        print(f"  {len(queue)} of {len(rows)} documents need a person")
+        print(f"  {len(queue)} of {len(rows)} documents need a person"
+              f"{f', {audited} of them sampled for audit' if audited else ''}")
+        if not args.explore:
+            print("  no exploration sampling: every label this queue produces will "
+                  "describe a document the policy already distrusted.", file=sys.stderr)
         print(f"  wrote {out}")
+        print(f"  outcomes go beside it, at {review_mod.path_for(out)}")
         return 0
 
     data = score(rows)
