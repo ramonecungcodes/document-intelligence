@@ -635,6 +635,178 @@ def render_budget_curve(curve: dict) -> str:
     return "\n".join(out)
 
 
+# --------------------------------------------------------------- transitions
+# What repair did to each field, rather than what it did to each document.
+#
+# A document-level delta hides the mechanism completely. Consider a repair that takes
+# a four-field document from 2/4 to 3/4:
+#
+#     vendor_name      right  ->  right
+#     invoice_number   right  ->  right
+#     service_address  missed ->  fabricated      <- the document has no such field
+#     total            wrong  ->  right
+#
+# That is +0.25 and is scored as an improvement. Operationally it did two unrelated
+# things: it repaired a total, and it invented an address the page does not contain.
+# The second is the expensive error in this project's terms -- a blank field gets
+# looked at and a confident wrong one flows downstream -- and the document-level
+# number cannot see it at all.
+#
+# Ordered worst-first, because the ones that matter are the ones a mean hides.
+TRANSITIONS = (
+    ("right_to_wrong", "a correct value was replaced with a wrong one"),
+    ("right_to_missed", "a correct value was dropped"),
+    ("right_to_fabricated", "a correct value became one the page does not carry"),
+    ("missed_to_fabricated", "an empty field was filled with something invented"),
+    ("correct_blank_to_fabricated", "a correctly empty field was invented into"),
+    ("wrong_to_wrong", "still wrong, differently"),
+    ("wrong_to_fabricated", "wrong, and now for a field the page does not carry"),
+    ("wrong_to_missed", "a wrong value was dropped"),
+    ("missed_to_missed", "still empty"),
+    ("fabricated_to_fabricated", "still invented"),
+    ("fabricated_to_missed", "an invented value was withdrawn"),
+    ("fabricated_to_right", "an invented value became the right one"),
+    ("missed_to_right", "an empty field was correctly filled"),
+    ("wrong_to_right", "a wrong value was corrected"),
+    ("right_to_right", "unchanged and correct"),
+    ("correct_blank_to_correct_blank", "unchanged and correctly empty"),
+)
+# Which transitions are damage, which are repair. Everything else is neutral -- and
+# `wrong_to_wrong` is deliberately neutral rather than damage, because a value that was
+# already wrong being wrong differently costs nothing new.
+DAMAGING = {"right_to_wrong", "right_to_missed", "right_to_fabricated",
+            "missed_to_fabricated", "correct_blank_to_fabricated",
+            "wrong_to_fabricated"}
+# Accuracy actually moved: the field is correct now and was not before.
+REPAIRING = {"wrong_to_right", "missed_to_right", "fabricated_to_right"}
+# Neither. The field is still not correct, but a silent wrong value became a visible
+# gap -- which this project has argued since Phase 1 is the cheaper failure, because a
+# blank gets looked at and a confident wrong one flows downstream unchallenged.
+#
+# Counted apart rather than as repair, because it was counted as repair first and the
+# smoke run reported "repaired 6 fields" for six values that were dropped and never
+# corrected. A category that flatters the loop is the one thing this module cannot
+# have.
+SAFER = {"wrong_to_missed", "fabricated_to_missed"}
+
+_SHORT = {"right": "right", "correctly_blank": "correct_blank",
+          "missed": "missed", "fabricated": "fabricated", "wrong": "wrong"}
+
+
+def transition_of(before: str, after: str) -> str:
+    return f"{_SHORT.get(before, before)}_to_{_SHORT.get(after, after)}"
+
+
+class Transitions:
+    """Field-level movement, counted across a whole arm.
+
+    Weighted counts are kept beside unweighted ones rather than replacing them. The
+    unweighted figure is the scientifically clean one; the weighted figure says what it
+    costs to break an invoice total against a vendor phone number. A single number
+    claiming to be both is neither.
+    """
+
+    def __init__(self):
+        self.counts = defaultdict(int)
+        self.weighted = defaultdict(float)
+        self.by_field = defaultdict(lambda: defaultdict(int))
+        self.documents = 0
+
+    def add(self, before: dict, after: dict, weights: dict = None) -> None:
+        self.documents += 1
+        weights = weights or {}
+        for name, was in before.items():
+            now = after.get(name)
+            if now is None:
+                continue                     # field not graded on the second pass
+            key = transition_of(was, now)
+            self.counts[key] += 1
+            self.weighted[key] += weights.get(name, 1.0)
+            if key in DAMAGING or key in REPAIRING or key in SAFER:
+                self.by_field[name][key] += 1
+
+    def to_dict(self) -> dict:
+        damaged = sum(self.counts[k] for k in DAMAGING)
+        repaired = sum(self.counts[k] for k in REPAIRING)
+        safer = sum(self.counts[k] for k in SAFER)
+        w_damaged = sum(self.weighted[k] for k in DAMAGING)
+        w_repaired = sum(self.weighted[k] for k in REPAIRING)
+        rows = [{"transition": name, "help": note, "count": self.counts[name],
+                 "weighted": round(self.weighted[name], 2)}
+                for name, note in TRANSITIONS if self.counts[name]]
+        worst = sorted(
+            ({"field": field,
+              "damaged": sum(v for k, v in moves.items() if k in DAMAGING),
+              "repaired": sum(v for k, v in moves.items() if k in REPAIRING),
+              "moves": dict(moves)}
+             for field, moves in self.by_field.items()),
+            key=lambda r: r["damaged"] - r["repaired"], reverse=True)
+        return {
+            "documents": self.documents,
+            "fields_repaired": repaired,
+            "fields_damaged": damaged,
+            # Still wrong, but wrong in a way a person will notice.
+            "fields_made_visible": safer,
+            "net_fields": repaired - damaged,
+            "fields_repaired_weighted": round(w_repaired, 2),
+            "fields_damaged_weighted": round(w_damaged, 2),
+            "net_fields_weighted": round(w_repaired - w_damaged, 2),
+            # Called out on its own because it is the transition this project has
+            # argued about since Phase 1: a blank a person would have caught, turned
+            # into a confident value nobody will.
+            "invented": (self.counts["missed_to_fabricated"]
+                         + self.counts["correct_blank_to_fabricated"]
+                         + self.counts["right_to_fabricated"]
+                         + self.counts["wrong_to_fabricated"]),
+            "rows": rows,
+            "worst_fields": worst[:10],
+        }
+
+
+def render_transitions(data: dict, arm: str = "") -> str:
+    if not data or not data.get("rows"):
+        return ""
+    out = ["", f"FIELD TRANSITIONS{f'  -  {arm}' if arm else ''}", ""]
+    out.append(f"  {'transition':<32}{'fields':>8}{'weighted':>10}   what it means")
+    for row in data["rows"]:
+        mark = ("!" if row["transition"] in DAMAGING
+                else "+" if row["transition"] in REPAIRING
+                else "~" if row["transition"] in SAFER else " ")
+        out.append(f"  {mark} {row['transition']:<30}{row['count']:>8}"
+                   f"{row['weighted']:>10.1f}   {row['help']}")
+    out.append("")
+    out.append(f"  repaired {data['fields_repaired']:>5} fields "
+               f"({data['fields_repaired_weighted']:.1f} weighted)")
+    out.append(f"  damaged  {data['fields_damaged']:>5} fields "
+               f"({data['fields_damaged_weighted']:.1f} weighted)")
+    out.append(f"  net      {data['net_fields']:>+5} fields "
+               f"({data['net_fields_weighted']:+.1f} weighted)")
+    if data.get("fields_made_visible"):
+        out.append(f"  ~ {data['fields_made_visible']} more fields went from a wrong "
+                   f"value to an empty one: still not")
+        out.append("    correct, but a gap a reviewer sees rather than a value they "
+                   "trust.")
+    if data["invented"]:
+        out.append("")
+        out.append(f"  {data['invented']} fields were filled with values the page does "
+                   f"not carry.")
+        out.append("  A blank field gets looked at. A confident wrong one does not.")
+    if data["net_fields"] > 0 and data["net_fields_weighted"] < 0:
+        out.append("")
+        out.append("  Positive unweighted, negative weighted: this repair traded "
+                   "important fields")
+        out.append("  for unimportant ones. The unweighted number is the one that "
+                   "misleads here.")
+    if data.get("worst_fields"):
+        out.append("")
+        out.append(f"  {'field':<28}{'damaged':>9}{'repaired':>10}")
+        for row in data["worst_fields"]:
+            if row["damaged"] or row["repaired"]:
+                out.append(f"  {row['field'][:27]:<28}{row['damaged']:>9}"
+                           f"{row['repaired']:>10}")
+    return "\n".join(out)
+
+
 def by_slice(score: RepairScore, key: str = "doc_type") -> list:
     """Per type or per profile. Exploratory only -- see the declared hierarchy."""
     groups = defaultdict(list)

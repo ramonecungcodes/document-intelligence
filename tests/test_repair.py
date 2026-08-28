@@ -455,3 +455,83 @@ class TestBudgetsMustMatch:
         text = render_budget_curve(budget_curve(arms, ["rerun", "reprompt"], 2))
         assert "flat within noise" in text
         assert "WORSE at 2 calls" not in text
+
+
+class TestFieldTransitions:
+    """What repair did to each field, which a document-level delta cannot see."""
+
+    def table(self, pairs, weights=None):
+        from eval.repair import Transitions
+
+        moves = Transitions()
+        moves.add({f"f{i}": b for i, (b, _a) in enumerate(pairs)},
+                  {f"f{i}": a for i, (_b, a) in enumerate(pairs)},
+                  weights or {})
+        return moves.to_dict()
+
+    def test_a_positive_document_delta_can_hide_an_invention(self):
+        """The example this exists for. Two fields move, the document improves, and
+        one of the moves filled a field the page does not carry."""
+        data = self.table([("wrong", "right"), ("missed", "fabricated")])
+        assert data["fields_repaired"] == 1
+        assert data["fields_damaged"] == 1
+        assert data["invented"] == 1
+        assert data["net_fields"] == 0
+
+    def test_dropping_a_wrong_value_is_not_a_repair(self):
+        """It was counted as one, and a smoke run reported "repaired 6 fields" for six
+        values that were dropped and never corrected. The field is still not right; it
+        is only more visible."""
+        data = self.table([("wrong", "missed")] * 6)
+        assert data["fields_repaired"] == 0
+        assert data["fields_damaged"] == 0
+        assert data["fields_made_visible"] == 6
+
+    def test_wrong_to_wrong_is_neutral(self):
+        """A value that was already wrong being wrong differently costs nothing new."""
+        data = self.table([("wrong", "wrong")] * 5)
+        assert data["fields_repaired"] == data["fields_damaged"] == 0
+
+    def test_every_flavour_of_invention_is_counted(self):
+        data = self.table([("missed", "fabricated"), ("correctly_blank", "fabricated"),
+                           ("right", "fabricated"), ("wrong", "fabricated")])
+        assert data["invented"] == 4
+        assert data["fields_damaged"] == 4
+
+    def test_weighting_can_disagree_with_the_count(self):
+        """A repair that fixes two unimportant fields and breaks one critical one is
+        positive unweighted and negative weighted, and the renderer says which
+        misleads."""
+        from eval.repair import render_transitions
+
+        data = self.table(
+            [("wrong", "right"), ("wrong", "right"), ("right", "wrong")],
+            weights={"f0": 1.0, "f1": 1.0, "f2": 3.0})
+        assert data["net_fields"] == 1
+        assert data["net_fields_weighted"] == -1.0
+        assert "traded important fields" in render_transitions(data)
+
+    def test_the_worst_fields_are_named(self):
+        from eval.repair import Transitions
+
+        moves = Transitions()
+        for _ in range(3):
+            moves.add({"total": "right"}, {"total": "wrong"}, {"total": 3.0})
+        data = moves.to_dict()
+        assert data["worst_fields"][0]["field"] == "total"
+        assert data["worst_fields"][0]["damaged"] == 3
+
+    def test_states_come_from_the_same_comparison_the_scorer_uses(self):
+        """A second notion of correctness here is how the transition table and the
+        headline accuracy would come to disagree."""
+        from core import doctypes
+        from eval.score import field_states
+
+        spec = doctypes.REGISTRY["invoice"]
+        truth = {"invoice_number": "INV-1", "total": "10.00", "po_number": ""}
+        states = field_states(
+            {"invoice_number": "INV-1", "total": "99.00", "po_number": "PO-9"},
+            truth, spec)
+        assert states["invoice_number"] == "right"
+        assert states["total"] == "wrong"
+        assert states["po_number"] == "fabricated"

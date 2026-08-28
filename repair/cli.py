@@ -56,7 +56,7 @@ def _candidates(args, config):
         args.corpus, scoring.load_records(args.predictions),
         [t.strip() for t in args.only.split(",") if t.strip()] or None)
 
-    by_file = {}
+    by_file, truth_of = {}, {}
     for stem, labels in scoring.load_corpus(args.corpus, [
             t.strip() for t in args.only.split(",") if t.strip()] or None).items():
         spec = doctypes.for_label_file(stem)
@@ -64,6 +64,9 @@ def _candidates(args, config):
             key = str(label.get("file", "")).replace("\\", "/")
             if key:
                 by_file[key] = (spec, spec.variant_of(label) if spec else "")
+                # The label itself, so a field's state before and after can be compared
+                # against the same truth rather than against two readings of it.
+                truth_of[key] = label
 
     records = {str(r.get("file", "")).replace("\\", "/"): r
                for r in scoring.load_records(args.predictions)}
@@ -80,6 +83,7 @@ def _candidates(args, config):
             continue
         graded_before = graded.get(key) or {}
         out.append({
+            "truth": truth_of.get(key),
             "file": key, "doc_type": row["truth"], "spec": spec, "variant": variant,
             "profile": row["profile"],
             "record": record,
@@ -201,9 +205,10 @@ def run_arm(name, rows, config, args, validators, policy, budget: int = 1):
         if index % 10 == 0 or index == len(rows):
             print(f"    {index}/{len(rows)}")
 
-    scores = {}
+    scores, moves = {}, {}
     for step in range(1, budget + 1):
         score = scoring_repair.RepairScore(arm=f"{name}@{step}" if budget > 1 else name)
+        transitions = scoring_repair.Transitions()
         after = scoring.per_document(args.corpus, records[step])
         for position, row in enumerate(rows):
             graded = after.get(row["file"]) or {}
@@ -226,8 +231,20 @@ def run_arm(name, rows, config, args, validators, policy, budget: int = 1):
                 correct_after=(row["correct_before"] if ungradable
                                else graded.get("fields_correct")),
                 fields=row["fields"], layout=row.get("layout")))
+
+            # Field by field, what repair actually did. The document-level delta
+            # cannot distinguish "corrected a total" from "invented an address", and
+            # a repair can do both at once and net out positive.
+            truth = row.get("truth")
+            if truth is not None:
+                transitions.add(
+                    scoring.field_states(row["record"], truth, row["spec"],
+                                         row["variant"]),
+                    scoring.field_states(merged, truth, row["spec"], row["variant"]),
+                    scoring.field_weights(row["spec"], row["variant"]))
         scores[step] = score
-    return scores
+        moves[step] = transitions
+    return scores, moves
 
 
 def main(argv=None):
@@ -286,8 +303,10 @@ def main(argv=None):
               file=sys.stderr)
 
     budget = max(1, args.budget)
-    series = {name: run_arm(name, rows, config, args, validators, policy, budget)
-              for name in names}
+    series, movements = {}, {}
+    for name in names:
+        series[name], movements[name] = run_arm(name, rows, config, args, validators,
+                                                policy, budget)
 
     # Flatten to arms the scorer understands. At budget 1 the names are unchanged, so
     # nothing about the single-attempt report moves.
@@ -304,6 +323,9 @@ def main(argv=None):
     data = scoring_repair.compare(arms)
     if budget > 1:
         data["budget_curve"] = scoring_repair.budget_curve(arms, names, budget)
+    # Transitions at the full budget: what the loop did to the fields, end to end.
+    data["transitions"] = {name: steps[budget].to_dict()
+                           for name, steps in movements.items() if budget in steps}
     slices = {}
     for name, score in arms.items():
         if len(arms) == 1:
@@ -316,6 +338,8 @@ def main(argv=None):
         print(scoring_repair.render(data, slices))
         if data.get("budget_curve"):
             print(scoring_repair.render_budget_curve(data["budget_curve"]))
+        for name, table in (data.get("transitions") or {}).items():
+            print(scoring_repair.render_transitions(table, name))
 
     out = args.out or os.path.join(REPORTS_DIR, "repair.json")
     try:

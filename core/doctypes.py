@@ -30,6 +30,16 @@ class Field:
     optional: bool = False      # the document may legitimately not carry this field
                                 # at all, and saying so is part of the answer. See
                                 # extract.schema for what it changes about the ask.
+    weight: float = 1.0         # how much breaking this field costs, relative to a
+                                # field of weight 1. Losing an invoice total and losing
+                                # a vendor phone number are not the same event, and an
+                                # unweighted accuracy prices them identically -- so a
+                                # repair that trades one for the other reads as neutral
+                                # when it is not. Weighted figures are reported
+                                # ALONGSIDE unweighted ones, never instead: the
+                                # unweighted number is the scientifically clean one and
+                                # the weighted one is the operational one, and a single
+                                # figure claiming to be both is neither.
 
 
 @dataclass(frozen=True)
@@ -116,20 +126,20 @@ LINE_ITEMS = Group(
 )
 
 _MONEY_TOTALS = (
-    Field("subtotal", "money"),
-    Field("tax", "money"),
-    Field("total", "money"),
+    Field("subtotal", "money", weight=2.0),
+    Field("tax", "money", weight=2.0),
+    Field("total", "money", weight=3.0),
 )
 
 INVOICE = DocType(
     name="invoice",
     label_file="invoices",
     fields=(
-        Field("invoice_number", "identifier"),
-        Field("invoice_date", "date"),
+        Field("invoice_number", "identifier", weight=3.0),
+        Field("invoice_date", "date", weight=2.0),
         Field("due_date", "date"),
-        Field("po_number", "identifier"),
-        Field("vendor_name", "name"),
+        Field("po_number", "identifier", weight=2.0),
+        Field("vendor_name", "name", weight=2.0),
         Field("bill_to", "name"),
         Field("terms", "enum"),
         Field("currency", "enum"),
@@ -141,7 +151,7 @@ PURCHASE_ORDER = DocType(
     name="purchase_order",
     label_file="purchase_orders",
     fields=(
-        Field("po_number", "identifier"),
+        Field("po_number", "identifier", weight=2.0),
         Field("po_date", "date"),
         Field("delivery_date", "date"),
         Field("buyer", "name"),
@@ -156,10 +166,10 @@ MULTI_BILL_INVOICE = DocType(
     name="multi_bill_invoice",
     label_file="multi_bill_invoices",
     fields=(
-        Field("invoice_number", "identifier"),
-        Field("invoice_date", "date"),
+        Field("invoice_number", "identifier", weight=3.0),
+        Field("invoice_date", "date", weight=2.0),
         Field("due_date", "date"),
-        Field("vendor_name", "name"),
+        Field("vendor_name", "name", weight=2.0),
         Field("bill_to", "name"),
         Field("master_account", "identifier"),
         Field("terms", "enum"),
@@ -213,9 +223,9 @@ MULTI_BILL_INVOICE = DocType(
                       help="First date of this service's billing period."),
                 Field("service_period_end", "date",
                       help="Last date of this service's billing period."),
-                Field("subtotal", "money"),
-                Field("tax", "money"),
-                Field("total", "money"),
+                Field("subtotal", "money", weight=2.0),
+                Field("tax", "money", weight=2.0),
+                Field("total", "money", weight=3.0),
             ),
             groups=(LINE_ITEMS,),
         ),
@@ -251,14 +261,14 @@ RESUME = DocType(
 # Forms are one pipeline type but five different documents. Each variant declares only
 # what its own paperwork carries; see DocType.fields_for.
 _ONBOARDING = (
-    Field("employee_name", "name"), Field("ssn", "ssn"),
+    Field("employee_name", "name"), Field("ssn", "ssn", weight=3.0),
     Field("date_of_birth", "date"), Field("home_address", "text"),
     Field("personal_email", "email"), Field("phone", "phone"),
     Field("job_title", "text"), Field("department", "text"),
     Field("manager", "name"), Field("start_date", "date"),
     Field("employment_type", "enum"), Field("pay_rate", "money"),
     Field("pay_frequency", "enum"), Field("bank_name", "name"),
-    Field("bank_routing", "account"), Field("bank_account", "account"),
+    Field("bank_routing", "account", weight=3.0), Field("bank_account", "account", weight=3.0),
     Field("w4_filing_status", "enum"), Field("allowances", "number", tolerance=0),
     Field("emergency_contact_name", "name"), Field("emergency_contact_phone", "phone"),
     Field("i9_verified", "bool"), Field("handbook_acknowledged", "bool"),
@@ -287,13 +297,15 @@ _W9 = (
     Field("tax_classification", "enum"), Field("address", "text"),
     Field("city_state_zip", "text"),
     Field("tin_type", "enum", help="Which identifier is given: SSN or EIN."),
-    Field("ssn", "ssn", help="Only if tin_type is SSN; a W-9 carries one, never both."),
-    Field("ein", "ein", help="Only if tin_type is EIN; a W-9 carries one, never both."),
+    Field("ssn", "ssn", weight=3.0,
+          help="Only if tin_type is SSN; a W-9 carries one, never both."),
+    Field("ein", "ein", weight=3.0,
+          help="Only if tin_type is EIN; a W-9 carries one, never both."),
     Field("requester", "name"),
 )
 
 _W4 = (
-    Field("name", "name"), Field("ssn", "ssn"), Field("address", "text"),
+    Field("name", "name"), Field("ssn", "ssn", weight=3.0), Field("address", "text"),
     Field("filing_status", "enum"), Field("multiple_jobs", "bool"),
     Field("dependents_amount", "money"), Field("other_income", "money"),
     Field("deductions", "money"), Field("extra_withholding", "money"),
@@ -301,7 +313,7 @@ _W4 = (
 
 _LOAN = (
     Field("application_number", "identifier"), Field("applicant_name", "name"),
-    Field("ssn", "ssn"), Field("date_of_birth", "date"), Field("address", "text"),
+    Field("ssn", "ssn", weight=3.0), Field("date_of_birth", "date"), Field("address", "text"),
     Field("phone", "phone"), Field("email", "email"), Field("employer", "name"),
     Field("job_title", "text"), Field("years_employed", "number", tolerance=0),
     Field("annual_income", "money"), Field("loan_type", "enum"),

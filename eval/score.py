@@ -210,6 +210,59 @@ def score_detection(pairs: list) -> DetectionScore:
     return detection
 
 
+# ------------------------------------------------------------------ field states
+# What one field is, in a form two extractions of the same document can be diffed
+# through. Five states rather than right/wrong, because the interesting failures are
+# distinctions inside "wrong":
+#
+#   a field the model left empty that the document does carry   -- cheap, gets noticed
+#   a field the model filled that the document does not carry   -- expensive, silent
+#
+# Collapsing those into one bucket is what makes a repair that trades a missed field
+# for an invented one look like no change at all.
+RIGHT = "right"                  # correct, and carries a value
+CORRECTLY_BLANK = "correctly_blank"   # correct, and the document has nothing to give
+MISSED = "missed"                # empty, but the document carries a value
+FABRICATED = "fabricated"        # filled, but the document carries nothing
+WRONG = "wrong"                  # filled, document carries something else
+
+
+def field_states(predicted: dict, truth: dict, doctype, variant: str = "") -> dict:
+    """field -> one of the five states above, for one document.
+
+    Uses the same `compare` the scorer uses, so a field this calls correct is a field
+    the accuracy figure calls correct. A second notion of correctness living here is
+    how the transition table and the headline would come to disagree.
+    """
+    out = {}
+    if doctype is None:
+        return out
+    for spec in doctype.graded_fields(variant):
+        if spec.name not in truth:
+            continue                    # does not apply to this document
+        truth_blank = is_blank(truth.get(spec.name))
+        predicted_blank = is_blank(predicted.get(spec.name))
+        result = compare(spec.kind, predicted.get(spec.name), truth.get(spec.name),
+                         tolerance=spec.tolerance, threshold=spec.threshold)
+        if result.match:
+            out[spec.name] = CORRECTLY_BLANK if predicted_blank else RIGHT
+        elif predicted_blank:
+            out[spec.name] = MISSED
+        elif truth_blank:
+            out[spec.name] = FABRICATED
+        else:
+            out[spec.name] = WRONG
+    return out
+
+
+def field_weights(doctype, variant: str = "") -> dict:
+    """field -> weight, from the schema. Absent means 1.0."""
+    if doctype is None:
+        return {}
+    return {spec.name: getattr(spec, "weight", 1.0)
+            for spec in doctype.graded_fields(variant)}
+
+
 # --------------------------------------------------------------- per document
 def per_document(corpus_root: str, predictions: list, only=None) -> dict:
     """file -> how well this one document extracted.
