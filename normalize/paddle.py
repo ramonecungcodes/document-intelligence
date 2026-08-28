@@ -121,6 +121,39 @@ class Paddle:
                 "dpi": self.dpi or "source"}
 
     @staticmethod
+    def _split(text: str, box, confidence, page: int):
+        """One detection into words, with the box divided between them.
+
+        Paddle detects *lines*; docTR and Tesseract detect *words*. `Extracted.words` is
+        a contract, and two engines filling it with different granularity breaks every
+        consumer silently -- `words_per_page` is a routing signal measured at +0.107
+        lift and would mean something different per engine, and the LayoutLM features
+        expect word-level tokens with boxes.
+
+        The split is proportional to character count, which is approximate: it assumes
+        even character widths and is wrong for proportional fonts. It is still far
+        closer than one box around a whole line, and the alternative -- leaving lines in
+        a field named `words` -- is not an approximation, it is a different measurement
+        wearing the same name.
+        """
+        x0, y0, x1, y1 = box
+        tokens = [t for t in text.split() if t]
+        if not tokens:
+            return []
+        width = x1 - x0
+        total = sum(len(t) for t in tokens) + max(0, len(tokens) - 1)
+        if total <= 0 or width <= 0:
+            return [Word(text=text, page=page, x0=x0, y0=y0, x1=x1, y1=y1,
+                         confidence=confidence)]
+        out, cursor = [], x0
+        for token in tokens:
+            span = width * (len(token) / total)
+            out.append(Word(text=token, page=page, x0=cursor, y0=y0,
+                            x1=cursor + span, y1=y1, confidence=confidence))
+            cursor += span + width * (1 / total)
+        return out
+
+    @staticmethod
     def _bbox(polygon):
         """A quadrilateral to a rectangle, in the raster's pixel space.
 
@@ -191,12 +224,9 @@ class Paddle:
                         confidences.append(score)
                     if position < len(polygons):
                         x0, y0, x1, y1 = self._bbox(polygons[position])
-                        words.append(Word(
-                            text=text, page=index,
-                            x0=x0 * scale_x, y0=y0 * scale_y,
-                            x1=x1 * scale_x, y1=y1 * scale_y,
-                            confidence=score,
-                        ))
+                        words.extend(self._split(
+                            text, (x0 * scale_x, y0 * scale_y,
+                                   x1 * scale_x, y1 * scale_y), score, index))
             body = "\n".join(lines)
             if body:
                 chunks.append(f"--- page {index} ---\n{body}"

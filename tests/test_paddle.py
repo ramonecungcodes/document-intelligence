@@ -108,3 +108,43 @@ class TestItAnswersLikeEveryOtherNormalizer:
 
         source = inspect.getsource(Paddle.read)
         assert 'layer="none"' in source
+
+
+class TestDetectionGranularity:
+    """Paddle detects lines; docTR and Tesseract detect words.
+
+    `Extracted.words` is a contract. Two engines filling it with different granularity
+    breaks every consumer silently -- `words_per_page` is a routing signal measured at
+    +0.107 lift and would mean something different per engine, and the LayoutLM
+    features expect word-level tokens.
+    """
+
+    def test_a_line_becomes_words(self):
+        out = Paddle._split("Northwind Components LLC", (0.0, 10.0, 120.0, 30.0),
+                            0.9, 1)
+        assert [w.text for w in out] == ["Northwind", "Components", "LLC"]
+
+    def test_the_boxes_tile_the_line_left_to_right(self):
+        out = Paddle._split("alpha beta gamma", (0.0, 0.0, 100.0, 10.0), 0.9, 1)
+        assert out[0].x0 == 0.0
+        for earlier, later in zip(out, out[1:]):
+            assert earlier.x1 <= later.x0 + 1e-9
+        assert out[-1].x1 <= 100.0 + 1e-6
+
+    def test_every_word_keeps_the_line_confidence_and_page(self):
+        """Paddle scores a detection, not a token. Inventing per-word confidence would
+        be a number with nothing behind it."""
+        out = Paddle._split("alpha beta", (0.0, 0.0, 50.0, 10.0), 0.77, 3)
+        assert all(w.confidence == 0.77 and w.page == 3 for w in out)
+
+    def test_a_single_token_keeps_the_whole_box(self):
+        out = Paddle._split("INVOICE", (5.0, 1.0, 45.0, 11.0), 0.9, 1)
+        assert len(out) == 1
+        assert (out[0].x0, out[0].x1) == (5.0, 45.0)
+
+    def test_empty_text_produces_nothing(self):
+        assert Paddle._split("   ", (0.0, 0.0, 10.0, 10.0), 0.9, 1) == []
+
+    def test_a_zero_width_box_does_not_divide_by_zero(self):
+        out = Paddle._split("alpha beta", (7.0, 0.0, 7.0, 10.0), 0.9, 1)
+        assert len(out) == 1 and out[0].text == "alpha beta"
