@@ -1,0 +1,134 @@
+/* The design system, lifted from the Docwise handoff and named.
+ *
+ * The handoff carries every style inline, which is fine for a mockup and wrong for a
+ * thing that has to stay consistent while its content changes. Naming them is the
+ * whole port: a value that appears in one place can be adjusted, and a value that
+ * appears in forty cannot.
+ *
+ * Semantic colour is deliberately separate from the accent. The accent says "this is
+ * interactive"; pass/warn/fail say "this is the state of the measurement". A dashboard
+ * that uses one hue for both makes every healthy row look like a button.
+ *
+ * Dark is defined for all three of the viewer's states -- an explicit choice stamps
+ * data-theme, and the default system setting stamps nothing, so prefers-color-scheme
+ * has to carry it alone.
+ */
+:root {
+  --ground: #f6f7f9;
+  --surface: #ffffff;
+  --surface-sunken: #fafbfc;
+  --chrome: #12151c;
+  --chrome-line: #1e232d;
+  --chrome-text: #a8b0be;
+  --chrome-bright: #f2f4f8;
+  --chrome-faint: #5d6675;
+
+  --border: #e4e7ed;
+  --border-strong: #d8dce4;
+  --rule: #eceef2;
+
+  --ink: #14171f;
+  --ink-muted: #6c7482;
+  --ink-faint: #8a93a1;
+
+  --accent: #3b6ef5;
+  --accent-press: #2a53c9;
+  --accent-tint: #eef2fe;
+  --accent-edge: #cfdcfd;
+
+  /* Green, amber, red. Read together as a scale, so they are given matching weight
+   * rather than matching saturation -- amber at true saturation would out-shout both
+   * neighbours and turn every warning row into the loudest thing on the page. */
+  --pass: #0d8a5f;
+  --pass-tint: #e9f7f0;
+  --pass-ink: #0d6f4e;
+  --warn: #b26a00;
+  --warn-tint: #fdf4e6;
+  --warn-ink: #8a5a00;
+  --fail: #c8324c;
+  --fail-tint: #fbe9ec;
+  --fail-ink: #8f2237;
+
+  --font: 'Helvetica Neue', Helvetica, Arial, system-ui, sans-serif;
+  /* Every number on this page is monospaced. Digits that do not line up between rows
+   * cannot be compared down a column, which is the only reason to put them in one. */
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  --r-sm: 3px;
+  --r: 7px;
+  --r-lg: 11px;
+  --r-pill: 20px;
+
+  --shadow: 0 1px 2px rgba(20, 23, 31, .04);
+  --shadow-lift: 0 4px 16px rgba(20, 23, 31, .08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0f1319;
+    --surface: #171b23;
+    --surface-sunken: #12161d;
+    --chrome: #0b0e13;
+    --chrome-line: #1a1f28;
+
+    --border: #262d38;
+    --border-strong: #333c49;
+    --rule: #1f252f;
+
+    --ink: #e8ebf1;
+    --ink-muted: #a3aab7;
+    --ink-faint: #8a93a1;
+
+    --accent: #6f95ff;
+    --accent-press: #a9c2ff;
+    --accent-tint: #182034;
+    --accent-edge: #2b3a5c;
+
+    --pass: #34d399;
+    --pass-tint: #10231c;
+    --pass-ink: #6ee7b7;
+    --warn: #e0a33a;
+    --warn-tint: #241c0e;
+    --warn-ink: #f0c674;
+    --fail: #fb7185;
+    --fail-tint: #2a1219;
+    --fail-ink: #fda4af;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+    --shadow-lift: 0 4px 16px rgba(0, 0, 0, .45);
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground: #0f1319;
+  --surface: #171b23;
+  --surface-sunken: #12161d;
+  --chrome: #0b0e13;
+  --chrome-line: #1a1f28;
+
+  --border: #262d38;
+  --border-strong: #333c49;
+  --rule: #1f252f;
+
+  --ink: #e8ebf1;
+  --ink-muted: #a3aab7;
+  --ink-faint: #8a93a1;
+
+  --accent: #6f95ff;
+  --accent-press: #a9c2ff;
+  --accent-tint: #182034;
+  --accent-edge: #2b3a5c;
+
+  --pass: #34d399;
+  --pass-tint: #10231c;
+  --pass-ink: #6ee7b7;
+  --warn: #e0a33a;
+  --warn-tint: #241c0e;
+  --warn-ink: #f0c674;
+  --fail: #fb7185;
+  --fail-tint: #2a1219;
+  --fail-ink: #fda4af;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow-lift: 0 4px 16px rgba(0, 0, 0, .45);
+}
