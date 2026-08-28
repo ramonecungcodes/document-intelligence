@@ -192,6 +192,11 @@ def main(argv=None):
                      help="repair every document, not only the ones the router "
                           "flagged. Useful for measuring what repair does to answers "
                           "nothing complained about")
+    run.add_argument("--no-validators", action="store_true", dest="no_validators",
+                     help="skip re-running the rules. Repair needs them -- the "
+                          "complaints are most of what the guided arm is given -- so "
+                          "this is for timing the rest of the pipeline, not for a "
+                          "measurement")
     run.add_argument("--format", default="table", choices=["table", "json"])
     run.add_argument("--out", default=None)
 
