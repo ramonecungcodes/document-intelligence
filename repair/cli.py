@@ -117,6 +117,19 @@ def _merge(original: dict, produced: dict, spec, variant: str) -> dict:
     fail to join against the corpus and be scored as a missing document rather than a
     bad one.
     """
+    from extract.runner import collapse_optional
+
+    produced = dict(produced)
+    # Optional fields are asked as a decision, not a slot: the model answers
+    # {"status": ..., "value": ...} and the runner flattens it before anything else
+    # sees it. This did not, so a repaired record kept the dict -- and the scorer,
+    # comparing a dict against a blank truth, read it as a fabricated value.
+    #
+    # It cost the headline of Phase 6. The report said repair invented business_name
+    # on 48 of 48 eligible W-9s; the model had actually answered "unclear" on 47 of
+    # them, which collapses to absent, which is correct. All 53 of the guided arm's
+    # inventions were this line missing.
+    collapse_optional(produced, spec, variant)
     merged = {k: v for k, v in original.items()
               if k.startswith("_") or k == "file"}
     merged["doc_type"] = spec.name

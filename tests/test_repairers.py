@@ -230,3 +230,54 @@ class TestRegistration:
 
         assert "repairer" in SLOTS
         assert SLOTS.index("repairer") > SLOTS.index("validator")
+
+
+class TestOptionalFieldsAreCollapsed:
+    """The bug that cost Phase 6 its headline.
+
+    Optional fields are asked as a decision rather than a slot, so the model answers
+    {"status": ..., "value": ...} and the runner flattens it before anything else sees
+    it. The repair merge did not, so a repaired record kept the dict -- and the scorer,
+    comparing a dict against a blank truth, read it as a fabricated value.
+
+    The report said repair invented business_name on 48 of 48 eligible W-9s. The model
+    had answered "unclear" on 47, which collapses to absent, which is correct.
+    """
+
+    def merged(self, produced):
+        from core import doctypes
+        from repair.cli import _merge
+
+        return _merge({"file": "forms/a.pdf", "_normalizer": {"engine": "native"}},
+                      produced, doctypes.REGISTRY["form"], "w9")
+
+    def test_unclear_becomes_absent_not_a_dict(self):
+        out = self.merged({"business_name": {"status": "unclear", "value": "Acme"}})
+        assert out["business_name"] is None
+
+    def test_absent_becomes_none(self):
+        out = self.merged({"business_name": {"status": "absent", "value": None}})
+        assert out["business_name"] is None
+
+    def test_present_keeps_the_value(self):
+        out = self.merged({"business_name": {"status": "present", "value": "Acme LLC"}})
+        assert out["business_name"] == "Acme LLC"
+
+    def test_a_plain_value_is_untouched(self):
+        out = self.merged({"business_name": "Acme LLC"})
+        assert out["business_name"] == "Acme LLC"
+
+    def test_the_merge_matches_what_the_extractor_does(self):
+        """Two flattenings of one shape is how the repaired record and the original
+        come to be scored by different rules."""
+        import inspect
+
+        from repair.cli import _merge
+
+        assert "collapse_optional" in inspect.getsource(_merge)
+
+    def test_harness_keys_and_file_identity_survive(self):
+        out = self.merged({"business_name": "Acme LLC"})
+        assert out["file"] == "forms/a.pdf"
+        assert out["_normalizer"] == {"engine": "native"}
+        assert out["form_type"] == "w9"

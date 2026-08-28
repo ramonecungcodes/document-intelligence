@@ -917,20 +917,42 @@ documents:
 | net | `-75` | `-51` |
 | fields **invented** | 55 | 53 |
 
-And then the finding that reframes the whole phase. Of `reprompt`'s 57 damaged fields,
-**48 are one field**: `business_name` on the W-9 variant. Forty-eight of the sixty W-9s
-in the set legitimately have no business name — and repair invented one on **all
-forty-eight**. A hundred per cent failure on one field, in both arms.
+And then the finding that reframed the phase, followed by the correction that
+dismantled it. Both are kept here because the second is the more useful one.
 
-The field is correctly declared `optional`, and the prompt says outright *"Do not invent
-a value the document does not contain. If a field genuinely is not on the page, leaving
-it empty is correct."* Neither helped. A named slot in a schema exerts more pressure on
-a second pass than an instruction not to fill it.
+Of `reprompt`'s 57 damaged fields, **48 were one field**: `business_name` on the W-9
+variant. Forty-eight of the sixty W-9s in the set legitimately have no business name,
+and the table said repair invented one on all forty-eight — a hundred per cent failure
+on one field, in both arms. Written up as a real result about named slots exerting more
+pressure than instructions.
 
-So "repair is net-negative on degraded documents" is true and misleading. Most of the
-damage is one field failing one way, and the general claim is much weaker than the
-headline suggests. That is only visible because transitions are counted per field;
-84% of the damage was hiding inside a document-level average.
+It was a bug in the repair runner. Optional fields are asked as a *decision* rather than
+a slot — the model answers `{"status": ..., "value": ...}` and the extractor flattens
+that before anything else sees it. The repair merge never flattened it, so a repaired
+record kept the dict, and the scorer comparing a dict against a blank truth read it as a
+fabricated value. Asked directly, the model had answered `"unclear"` on 47 of the 48,
+which collapses to absent, which is **correct**.
+
+Two optional fields exist in the entire schema registry: `business_name` and
+`co_applicant_name`. The transition table showed damage of exactly 48 and 5. Fifty-three
+— every one of the guided arm's inventions.
+
+Three things worth taking from that.
+
+**The per-field table found its own scorer's bug.** A document-level average showed
+`-0.029` and looked like a model result. Only the transition table concentrated the
+damage into one field on one variant, which is what made it checkable at all — and what
+made it obviously wrong once checked. The diagnostic built to catch the model catching
+the metric caught the harness instead.
+
+**Two flattenings of one shape is one too many.** `collapse_optional` lived in the
+extraction runner, and the repair runner reimplemented merging without it. That is the
+same failure as `repair.cli` and `route.cli` disagreeing about which documents were
+flagged, and as the per-document scorer needing a test pinning it to the aggregate. Every
+time this project has had two implementations of one rule, they have drifted.
+
+**A finding that concentrates suspiciously is a finding to check.** 48 of 48 is not what
+model behaviour usually looks like. The number that survives a re-run is below.
 
 The guided arm is also dramatically more careful with values it already had:
 `right_to_wrong` 2 against the blind arm's 18, `right_to_missed` 2 against 20. The
@@ -956,9 +978,9 @@ loop *and* tool use; only the loop exists. The loop is what produces the phase's
 number, so the phase closes on its deliverable, and tool use moves to v2 rather than
 being quietly folded in.
 
-**One field is doing most of the work and has not been fixed.** `business_name` needs
-either a prompt that resists a named slot or an extraction shape where "absent" is the
-default rather than a value to be argued out of. Fixing it would change the headline.
+**The degraded numbers above predate the optional-field fix.** They are the ones the
+runs produced and they are reported as measured; the corrected re-run is what the phase
+closes on, and the two are kept apart rather than quietly overwritten.
 
 **Gate-code transitions are not counted.** `A,B -> A` and `A,B -> C` are numerically
 identical today and mean different things — the second cleared two complaints and
