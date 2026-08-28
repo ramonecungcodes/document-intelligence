@@ -50,6 +50,12 @@ class Paddle:
                      "the other engines are given so the comparison is of engines "
                      "rather than of resolutions"),
         Setting("lang", str, default="en"),
+        Setting("version", str, default="PP-OCRv5",
+                help="pinned, not defaulted. paddleocr 3.7.0 ships PP-OCRv6 as its "
+                     "default and downloads it silently -- the first smoke run here "
+                     "fetched PP-OCRv6_medium_det while the report would have said "
+                     "v5. A benchmark that cannot name the model it ran is not a "
+                     "benchmark"),
         Setting("unwarp", bool, default=True,
                 help="PP-OCRv5's document unwarping. On by default because it is the "
                      "specific reason to try this engine -- the photo profile carries "
@@ -62,10 +68,12 @@ class Paddle:
         Setting("page_markers", bool, default=True),
     )
 
-    def __init__(self, dpi: int = 0, lang: str = "en", unwarp: bool = True,
-                 orient: bool = True, device: str = "", page_markers: bool = True, **_):
+    def __init__(self, dpi: int = 0, lang: str = "en", version: str = "PP-OCRv5",
+                 unwarp: bool = True, orient: bool = True, device: str = "",
+                 page_markers: bool = True, **_):
         self.dpi = dpi
         self.lang = lang
+        self.version = version
         self.unwarp = unwarp
         self.orient = orient
         self.device = device
@@ -76,7 +84,7 @@ class Paddle:
         resolution = "source dpi" if not self.dpi else f"{self.dpi}dpi"
         extras = ",".join(filter(None, ["unwarp" if self.unwarp else "",
                                         "orient" if self.orient else ""])) or "plain"
-        return f"paddle · PP-OCRv5 · {extras} · {resolution}"
+        return f"paddle · {self.version} · {extras} · {resolution}"
 
     def engine(self):
         """Built once and reused. Loading the weights per document is most of the cost."""
@@ -91,6 +99,10 @@ class Paddle:
                     "OCR stage writes a cache and nothing downstream imports it.")
             options = {
                 "lang": self.lang,
+                # Pinned. Left unset, the library picks whatever its current default
+                # is and downloads it without comment, so the number in the report
+                # would describe a model nobody chose.
+                "ocr_version": self.version,
                 "use_doc_unwarping": self.unwarp,
                 "use_doc_orientation_classify": self.orient,
                 # Textline orientation is for rotated lines within a page, which this
@@ -101,6 +113,12 @@ class Paddle:
                 options["device"] = self.device
             self._engine = PaddleOCR(**options)
         return self._engine
+
+    def provenance(self) -> dict:
+        """What actually ran, for the report rather than for the reader of this file."""
+        return {"engine": "paddle", "version": self.version,
+                "unwarp": self.unwarp, "orient": self.orient,
+                "dpi": self.dpi or "source"}
 
     @staticmethod
     def _bbox(polygon):

@@ -23,6 +23,22 @@ class TestItLoadsWithoutTheDependency:
         engine = build(plugin="paddle")
         assert "PP-OCRv5" in engine.describe()
 
+    def test_the_model_version_is_pinned_not_defaulted(self):
+        """paddleocr 3.7.0 ships PP-OCRv6 as its default and downloads it silently --
+        the first smoke run fetched PP-OCRv6_medium_det while the report would have
+        said v5. A benchmark that cannot name the model it ran is not a benchmark."""
+        import inspect
+
+        assert Paddle().version == "PP-OCRv5"
+        assert '"ocr_version": self.version' in inspect.getsource(Paddle.engine)
+        assert Paddle(version="PP-OCRv4").describe().count("PP-OCRv4") == 1
+
+    def test_provenance_names_what_ran(self):
+        out = Paddle(version="PP-OCRv5", unwarp=False).provenance()
+        assert out["version"] == "PP-OCRv5"
+        assert out["unwarp"] is False
+        assert out["dpi"] == "source"
+
     def test_the_missing_dependency_says_where_it_lives(self):
         """A plain ImportError would send someone to pip in the wrong environment.
         The OCR stage is installed separately on purpose and the message has to say so.
