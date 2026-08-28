@@ -592,18 +592,46 @@ def render_budget_curve(curve: dict) -> str:
         if len(rows) < 2:
             continue
         first, last = rows[0], rows[-1]
-        if (last["net_delta"] or 0) < (first["net_delta"] or 0) - 1e-9:
+
+        def separated(low_row, high_row, key):
+            """Do the two intervals fail to overlap?
+
+            A bare comparison of point estimates fired this warning on a 0.7 point
+            move in the damage rate -- one document -- whose interval overlapped the
+            first almost entirely. That is precisely the error the rest of this module
+            refuses to make, committed by the module itself. A difference between two
+            budgets is only worth naming when their intervals are disjoint.
+            """
+            a, b = low_row.get(key), high_row.get(key)
+            if not a or not b:
+                return False
+            return b[0] > a[1] or a[0] > b[1]
+
+        if ((last["net_delta"] or 0) < (first["net_delta"] or 0)
+                and separated(first, last, "net_delta_ci")):
             out.append("")
             out.append(f"  {name} is WORSE at {last['attempts']} calls than at "
                        f"{first['attempts']}: "
-                       f"{first['net_delta']:+.4f} -> {last['net_delta']:+.4f}.")
+                       f"{first['net_delta']:+.4f} -> {last['net_delta']:+.4f}, "
+                       f"intervals disjoint.")
             out.append("  Extra attempts are buying harm. Cap the budget lower.")
-        if (last["damaged_rate"] or 0) > (first["damaged_rate"] or 0) + 1e-9:
+        if ((last["damaged_rate"] or 0) > (first["damaged_rate"] or 0)
+                and separated(first, last, "damaged_rate_ci")):
             out.append(f"  {name} damage rate climbs with budget: "
                        f"{(first['damaged_rate'] or 0):.1%} -> "
-                       f"{(last['damaged_rate'] or 0):.1%}. An attempt that made the "
-                       f"record worse")
+                       f"{(last['damaged_rate'] or 0):.1%}, intervals disjoint. An "
+                       f"attempt that made the record worse")
             out.append("  is handing that worse record to the next one.")
+
+        # Flat is a finding too, and the more likely one. Without saying so, a reader
+        # sees three rows that differ in the fourth decimal and infers a trend.
+        if not separated(first, last, "net_delta_ci"):
+            out.append("")
+            out.append(f"  {name}: budget {first['attempts']} to {last['attempts']} is "
+                       f"flat within noise "
+                       f"({first['net_delta']:+.4f} -> {last['net_delta']:+.4f}, "
+                       f"intervals overlap).")
+            out.append("  The extra calls bought nothing measurable either way.")
     return "\n".join(out)
 
 

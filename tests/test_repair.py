@@ -439,3 +439,19 @@ class TestBudgetsMustMatch:
         text = render_budget_curve(budget_curve(arms, ["rerun", "reprompt"], 2))
         assert "WORSE at 2 calls" in text
         assert "Cap the budget lower." in text
+
+    def test_a_move_inside_its_own_interval_is_reported_as_flat(self):
+        """The warning fired on a 0.7 point damage-rate move -- one document -- whose
+        interval overlapped almost entirely. A trend claim needs disjoint intervals or
+        it is the same error the rest of the module refuses to make."""
+        from eval.repair import budget_curve, render_budget_curve
+
+        arms = {
+            "rerun@1": arm("rerun@1", [(0.5, 0.5)] * 30),
+            "rerun@2": arm("rerun@2", [(0.5, 0.5)] * 30),
+            "reprompt@1": arm("reprompt@1", [(0.5, 0.55)] * 29 + [(0.5, 0.5)]),
+            "reprompt@2": arm("reprompt@2", [(0.5, 0.55)] * 28 + [(0.5, 0.5)] * 2),
+        }
+        text = render_budget_curve(budget_curve(arms, ["rerun", "reprompt"], 2))
+        assert "flat within noise" in text
+        assert "WORSE at 2 calls" not in text
