@@ -52,6 +52,9 @@ def _candidates(args, config):
     validators = build_all(config)
     policy = policy_mod.build(config)
     rows = signal_rows(args)
+    graded = scoring.per_document(
+        args.corpus, scoring.load_records(args.predictions),
+        [t.strip() for t in args.only.split(",") if t.strip()] or None)
 
     by_file = {}
     for stem, labels in scoring.load_corpus(args.corpus, [
@@ -75,11 +78,15 @@ def _candidates(args, config):
         decision = policy.decide(row["signals"])
         if args.flagged_only and not decision.review:
             continue
+        graded_before = graded.get(key) or {}
         out.append({
             "file": key, "doc_type": row["truth"], "spec": spec, "variant": variant,
             "profile": row["profile"],
             "record": record,
             "before": row["outcome"],
+            "correct_before": graded_before.get("fields_correct"),
+            "fields": graded_before.get("fields_graded"),
+            "layout": graded_before.get("layout"),
             "gates_before": len(decision.reasons),
             "complaints": repair.complaints_for(record, spec, variant, validators,
                                                 decision),
@@ -157,15 +164,25 @@ def run_arm(name, rows, config, args, validators, policy):
         signals = feature_mod.extract(merged, row["spec"], row["variant"], validators)
         gates_after = len(policy.decide(signals).reasons)
         accuracy = graded.get("field_accuracy")
+        failed = accuracy is None
         score.add(scoring_repair.Outcome(
             file=row["file"],
             before=row["before"],
             # A repair that failed leaves the document exactly where it was. Scoring a
             # crashed call as a ruined extraction would make an outage read as a
             # damaging loop.
-            after=row["before"] if accuracy is None else accuracy,
+            after=row["before"] if failed else accuracy,
             gates_before=row["gates_before"], gates_after=gates_after,
-            attempts=1, doc_type=row["doc_type"], profile=row["profile"]))
+            attempts=1, doc_type=row["doc_type"], profile=row["profile"],
+            error="not gradable" if failed else "",
+            # Raw counts, so "did this document get better" is an integer question.
+            correct_before=row["correct_before"],
+            correct_after=(row["correct_before"] if failed
+                           else graded.get("fields_correct")),
+            fields=row["fields"],
+            # What this row is not independent of: four degradations of one page move
+            # together, and a resampling interval that ignores that is too narrow.
+            layout=row.get("layout")))
     return score
 
 
@@ -210,13 +227,29 @@ def main(argv=None):
           f"{'' if args.flagged_only else ' (every document, not only flagged)'}")
 
     names = [n.strip() for n in args.arms.split(",") if n.strip()]
+    import repair as repair_pkg
+
+    budgets = {n: repair_pkg.build(n, config).max_attempts for n in names}
+    if len(set(budgets.values())) > 1:
+        # Otherwise the comparison prices three chances to sample a better answer
+        # against one, rather than pricing the feedback.
+        print(f"  WARNING: arms have different call budgets {budgets}. Any difference "
+              f"below includes the extra sampling, not only the guidance.",
+              file=sys.stderr)
     if "rerun" not in names:
         print("  WARNING: no `rerun` arm. Any gain reported below includes whatever a "
               "second sample is worth and cannot be attributed to the feedback.",
               file=sys.stderr)
 
-    arms = {name: run_arm(name, rows, config, args, validators, policy)
-            for name in names}
+    arms = {}
+    for name in names:
+        arms[name] = run_arm(name, rows, config, args, validators, policy)
+    # The control is free -- it is the extraction that already happened -- so it is
+    # always present rather than something a caller can forget. Without it the report
+    # can compare arms to each other and cannot say whether any of them should run.
+    if arms:
+        arms["no_repair"] = scoring_repair.no_repair_arm(
+            next(iter(arms.values())).outcomes)
     data = scoring_repair.compare(arms)
     slices = {}
     for name, score in arms.items():

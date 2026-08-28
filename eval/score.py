@@ -254,9 +254,20 @@ def per_document(corpus_root: str, predictions: list, only=None) -> dict:
                 "doc_type": stem,
                 "failed": bool(bucket.failed),
                 "fields_graded": n,
+                # The raw counts, not only the ratio. `Comparison.match` is a bool, so
+                # field correctness is countable, and a caller asking "did this document
+                # get better" should be able to compare integers rather than floats with
+                # a tolerance. A ratio also silently reweights documents against each
+                # other: a 9-field W-9 and a 24-field onboarding form move in steps of
+                # 1/9 and 1/24, and only the counts let both a document-weighted and a
+                # field-weighted answer be computed from the same data.
+                "fields_correct": match,
                 "field_accuracy": (round(match / n, 4) if n else None),
                 "field_exact": (round(exact / n, 4) if n else None),
                 "blank_fields": blank,
+                # The page design, which is the cluster documents are NOT independent
+                # within. Carried here so a resampling interval can respect it.
+                "layout": truth.get("layout"),
             }
     return out
 

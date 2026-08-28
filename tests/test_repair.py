@@ -6,7 +6,8 @@ a loop could look successful without helping.
 """
 import pytest
 
-from eval.repair import Outcome, RepairScore, by_slice, compare, render
+from eval.repair import (Outcome, RepairScore, by_slice, compare, paired,
+                         render)
 
 
 def outcome(before, after, gates_before=1, gates_after=0, **kw):
@@ -94,7 +95,7 @@ class TestTheBlindBaseline:
                         "reprompt": arm("reprompt", pairs)})
         assert data["arms"]["reprompt"]["over_rerun"] == pytest.approx(0.0, abs=1e-9)
         assert not data["paired"]["reprompt"]["resolvable"]
-        assert "not been measured" in render(data)
+        assert "not measured" in render(data)
 
     def test_an_effect_inside_its_own_error_bar_is_not_quotable(self):
         """The finding that made this necessary: two runs of the same comparison came
@@ -123,7 +124,7 @@ class TestTheBlindBaseline:
     def test_without_a_baseline_the_report_says_the_gain_is_unattributable(self):
         data = compare({"reprompt": arm("reprompt", [(0.5, 0.9)])})
         assert data["baseline"] is None
-        assert "no blind re-run arm was run" in render(data)
+        assert "no blind re-run arm" in render(data)
 
 
 class TestFailuresAndSlices:
@@ -181,7 +182,7 @@ class TestAWinBetweenTwoLosersIsNotAWin:
         text = render(self.losers())
         assert "NET-NEGATIVE" in text
         headline = text.index("NET-NEGATIVE")
-        assert headline < text.index("reprompt against rerun")
+        assert headline < text.index("SECONDARY")
 
     def test_two_healthy_arms_are_not_warned_about(self):
         """The warning must not fire on a genuinely good result, or it becomes noise
@@ -267,3 +268,115 @@ class TestTheGoodhartCrossTab:
         from eval.repair import goodhart
 
         assert goodhart({"deltas": {"a.pdf": -0.5}})["available"] is False
+
+
+class TestInvariants:
+    """Properties that must hold for any input, not just the cases I thought of.
+
+    Written as explicit generators rather than with Hypothesis, which is not a
+    dependency here. The point is the same: these assert structure, so they fail on
+    inputs no example-based test would have covered.
+    """
+
+    def rows(self, seed, n=40):
+        import random as rnd
+        rng = rnd.Random(seed)
+        out = []
+        for i in range(n):
+            before = rng.choice([0.0, 0.25, 0.5, 0.75, 1.0])
+            after = rng.choice([0.0, 0.25, 0.5, 0.75, 1.0])
+            out.append(outcome(before, after, rng.randint(0, 3), rng.randint(0, 3),
+                               file=f"invoices/doc_{i}__{rng.choice(['fax','light'])}.pdf"))
+        return out
+
+    def arm_from(self, name, rows):
+        score = RepairScore(arm=name)
+        for row in rows:
+            score.add(row)
+        return score
+
+    def test_an_unchanged_document_is_neither_improved_nor_damaged(self):
+        for value in (0.0, 0.33, 0.5, 1.0):
+            row = outcome(value, value)
+            assert not row.improved and not row.damaged
+            assert row.delta == 0
+
+    def test_a_strictly_better_document_is_never_damaged(self):
+        for seed in range(20):
+            for row in self.rows(seed, 10):
+                if row.after > row.before + 1e-9:
+                    assert not row.damaged
+                if row.after < row.before - 1e-9:
+                    assert not row.improved
+
+    def test_swapping_the_arms_negates_the_paired_mean(self):
+        for seed in (1, 2, 3):
+            a = self.arm_from("a", self.rows(seed)).to_dict()
+            b = self.arm_from("b", self.rows(seed + 100)).to_dict()
+            assert paired(a, b)["mean"] == pytest.approx(-paired(b, a)["mean"],
+                                                         abs=1e-9)
+
+    def test_an_arm_against_itself_is_exactly_zero(self):
+        for seed in (4, 5, 6):
+            a = self.arm_from("a", self.rows(seed)).to_dict()
+            pair = paired(a, a)
+            assert pair["mean"] == 0
+            assert pair["interval"] == [0.0, 0.0]
+            assert not pair["resolvable"]
+
+    def test_document_order_cannot_change_the_result(self):
+        import random as rnd
+
+        rows = self.rows(7)
+        shuffled = list(rows)
+        rnd.Random(99).shuffle(shuffled)
+        one = self.arm_from("a", rows).to_dict()
+        two = self.arm_from("a", shuffled).to_dict()
+        for key in ("net_delta", "improved", "damaged", "worst_delta",
+                    "median_delta", "gates_clear", "net_delta_ci"):
+            assert one[key] == two[key], key
+
+    def test_duplicating_every_document_leaves_point_estimates_alone(self):
+        """The interval may move because n changes. The point estimate must not."""
+        rows = self.rows(8)
+        one = self.arm_from("a", rows).to_dict()
+        two = self.arm_from("a", rows + [
+            outcome(r.before, r.after, r.gates_before, r.gates_after,
+                    file=r.file.replace("invoices/", "copies/")) for r in rows
+        ]).to_dict()
+        assert one["net_delta"] == pytest.approx(two["net_delta"], abs=1e-9)
+        assert one["damaged_rate"] == pytest.approx(two["damaged_rate"], abs=1e-9)
+        assert two["damaged"] == 2 * one["damaged"]
+
+    def test_the_bootstrap_is_deterministic(self):
+        """An interval that moves when the report is re-rendered is not a
+        measurement."""
+        rows = self.rows(9)
+        first = self.arm_from("a", rows).to_dict()["net_delta_ci"]
+        second = self.arm_from("a", rows).to_dict()["net_delta_ci"]
+        assert first == second
+
+    def test_clustering_by_source_collapses_profiles_of_one_page(self):
+        """Four degradations of one document are one cluster, not four observations."""
+        from eval.repair import source_of
+
+        assert source_of("forms/claim_5040__fax.pdf") == "forms/claim_5040"
+        assert source_of("forms/claim_5040.pdf") == "forms/claim_5040"
+        rows = [outcome(0.5, 0.9, file=f"forms/claim_1__{p}.pdf")
+                for p in ("fax", "light", "photo", "clean")]
+        assert len({r.source for r in rows}) == 1
+
+    def test_a_wilson_interval_stays_inside_zero_and_one(self):
+        from eval.repair import wilson
+
+        for successes, total in ((0, 5), (5, 5), (1, 3), (8, 40), (0, 1)):
+            low, high = wilson(successes, total)
+            assert 0.0 <= low <= high <= 1.0
+
+    def test_field_counts_decide_damage_when_present(self):
+        """Field correctness is countable, so damage is an integer question and a
+        float tolerance cannot be what answers it."""
+        row = Outcome(file="a.pdf", before=0.5, after=0.5, gates_before=1,
+                      gates_after=1, correct_before=11, correct_after=12, fields=24)
+        assert row.field_gain == 1
+        assert row.improved and not row.damaged

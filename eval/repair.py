@@ -1,53 +1,174 @@
-"""Whether repair helped, and the two ways that question is usually answered wrongly.
+"""Whether repair helped, and the many ways that question is answered wrongly.
 
 Phase 6 ends with a repair success rate. Almost every obvious definition of that number
 is one a repair loop can satisfy without improving a single document, so the definition
 is most of the work.
 
-**The first trap: scoring repair by whether the complaints stopped.** A document enters
-repair because a gate fired -- a validator found that subtotal plus tax does not equal
-total, or too many fields came back blank. If success means the gate no longer fires,
-the shortest path to success is to blank the fields the rule reads. An empty tax cannot
-fail an arithmetic check. A loop optimised against its own critics learns to silence
-them, and every dashboard would show it working.
+THE TRAPS THIS IS BUILT TO FAIL LOUDLY ON
 
-So success is measured against the corpus labels, never against the gates. `gates_clear`
-is still reported, because the difference between it and the real number is itself the
-diagnostic: a repair that clears gates without moving field accuracy is doing exactly
-the thing above.
+*Scoring by whether the complaints stopped.* A document enters repair because a
+validator found that subtotal plus tax does not equal total. If success means the rule
+stops firing, the shortest path is blanking the fields the rule reads -- an empty tax
+cannot fail an arithmetic check. Success is measured against the corpus labels and never
+against the gates; `gates_clear` is reported beside it because the distance between the
+two is the diagnostic for exactly this.
 
-**The second trap: reporting only the documents that improved.** Repair rewrites answers
-that were partly right. Some come back worse, and a loop that improves sixty documents
-and damages fifty is not a loop that improved sixty documents. `damaged` sits next to
-`improved` in every table here and in the headline sentence, because reporting the
-first without the second is how a net-negative change ships.
+*Reporting only what improved.* Repair rewrites answers that were partly right, and some
+come back worse. `damaged` sits beside `improved` everywhere, with a Wilson interval,
+because a rate observed on forty documents is an estimate and reads like a fact.
 
-**The baseline: a blind re-run.** The extractor is sampled, so asking it the same
-question twice changes some answers and improves some of them by luck. Any repair that
-sends a second request inherits that for free. The question is whether *feedback* is
-worth anything beyond a second roll of the dice, and it is answered by running an arm
-that re-extracts with no feedback at all and scoring it identically. If guided repair
-does not beat blind re-run, the guidance is decoration and the honest report says so.
+*Confusing two different questions.* "Should repair run at all" and "is the guidance
+worth anything beyond resampling" are different hypotheses with different controls, and
+a loop can win the second while losing the first -- which is what this corpus does. So
+`no_repair` is an explicit arm rather than an implied starting point, and both
+comparisons are reported.
 
-Scores are per document and continuous -- a document is 24 fields of which 22 are
-right -- for the same reason `eval.calibration` scores extraction that way. A pass/fail
-bar here would hide small repairs and small damage equally.
+*Treating four degradations of one page as four observations.* `invoice_001__fax`,
+`__light` and `__photo` share a source document; documents sharing a page design share
+structure. Resampling them as independent narrows every interval, and it is the same
+mistake, in statistics, that document-level holdout made in Phase 3 when it reported a
+model as generalising that had memorised templates. Intervals here are a **cluster
+bootstrap over source documents**, not a normal approximation over rows.
+
+*Planning sample size from the effect you happened to observe.* Near zero that is
+violently unstable -- three runs of one comparison gave -0.007, +0.011 and +0.008, and
+the implied n swings by orders of magnitude. Sample size is planned against a declared
+minimum effect worth caring about instead.
+
+THE PRIMARY OUTCOME, DECLARED IN ADVANCE
+
+There are a lot of legitimate numbers here, which is a lot of chances to find a
+favourable one. So:
+
+    PRIMARY      document-weighted delta, guided against no_repair
+    SECONDARY    guided against blind rerun; damage rate; the Goodhart cross-tab
+    EXPLORATORY  profile and document-type slices, per-gate behaviour
+
+Only the primary decides whether repair worked.
 """
 from __future__ import annotations
 
+import math
+import random
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-# A change smaller than this is not a repair, it is the model answering the same
-# question slightly differently. Set at one part in a thousand: field accuracy on the
-# smallest schema here moves in steps of about 1/7, so anything at this scale is
-# floating-point noise rather than a document changing.
+# Field correctness is countable -- `core.normalize.Comparison.match` is a bool -- so
+# "did this document get better" is an integer comparison and needs no tolerance. This
+# constant survives only for callers that build Outcomes from ratios alone.
 EPSILON = 1e-3
+
+# The smallest improvement worth a second model call, in field accuracy. Sample-size
+# planning uses this rather than the observed effect, because an observed effect near
+# zero makes the required n meaningless.
+MIN_USEFUL_DELTA = 0.01
+BOOTSTRAP_ROUNDS = 4000
+BOOTSTRAP_SEED = 20260828
 
 
 def _rate(numerator, denominator):
     return round(numerator / denominator, 4) if denominator else None
 
+
+def source_of(relative_path: str) -> str:
+    """The document a degraded page came from.
+
+    `forms/onboarding_5003__photo.pdf` and `forms/onboarding_5003__fax.pdf` are two
+    photographs of one document, not two documents. This is the unit resampling has to
+    treat as independent.
+    """
+    stem = relative_path[:-4] if relative_path.endswith(".pdf") else relative_path
+    return stem.split("__")[0]
+
+
+# --------------------------------------------------------------------- intervals
+
+def wilson(successes: int, total: int, z: float = 1.96):
+    """A confidence interval for a proportion that behaves near 0 and 1.
+
+    The textbook normal interval on a proportion runs out of bounds at the edges and is
+    badly wrong for small counts -- and small counts is the case here, since a damage
+    rate is often eight documents out of forty. Wilson is the standard fix and costs
+    four lines.
+    """
+    if not total:
+        return None
+    p = successes / total
+    denominator = 1 + z * z / total
+    centre = (p + z * z / (2 * total)) / denominator
+    half = (z * ((p * (1 - p) + z * z / (4 * total)) / total) ** 0.5) / denominator
+    return [round(max(0.0, centre - half), 4), round(min(1.0, centre + half), 4)]
+
+
+def cluster_bootstrap(values_by_cluster: dict, rounds: int = BOOTSTRAP_ROUNDS,
+                      seed: int = BOOTSTRAP_SEED):
+    """Resample whole clusters, not rows, and return the interval of the mean.
+
+    Two reasons this replaces `mean +/- 1.96 * stderr`.
+
+    The distribution is wrong for a normal approximation: per-document differences here
+    are bounded, semi-discrete, and overwhelmingly exactly zero -- 156 of 200 in the
+    degraded run. A spike at zero with thin asymmetric tails is not what that formula
+    assumes.
+
+    And the rows are not independent. Four degradations of one page move together, so
+    resampling rows pretends there is four times more information than there is. The
+    unit resampled here is the source document, with all of its profiles carried along.
+
+    Seeded, so the same data always yields the same interval. An interval that moves
+    when the report is re-rendered is not a measurement.
+    """
+    # Sorted by cluster key, not left in insertion order. The resampler indexes into
+    # this list, so an order that follows however the documents happened to arrive
+    # makes the interval depend on the order of the input file -- the same data,
+    # shuffled, produced [-0.1938, 0.1375] and [-0.1875, 0.1437]. Found by the
+    # invariant test asserting that document order cannot change a result, which is
+    # precisely the kind of bug no example-based test would have looked for.
+    clusters = [values_by_cluster[key] for key in sorted(values_by_cluster)
+                if values_by_cluster[key]]
+    if len(clusters) < 3:
+        return None
+    rng = random.Random(seed)
+    count = len(clusters)
+    means = []
+    for _ in range(rounds):
+        total = 0.0
+        size = 0
+        for _ in range(count):
+            picked = clusters[rng.randrange(count)]
+            total += sum(picked)
+            size += len(picked)
+        means.append(total / size if size else 0.0)
+    means.sort()
+    low = means[int(0.025 * len(means))]
+    high = means[min(len(means) - 1, int(0.975 * len(means)))]
+    return [round(low, 4), round(high, 4)]
+
+
+def documents_needed(values_by_cluster: dict, minimum: float = MIN_USEFUL_DELTA):
+    """Roughly how many documents would reliably detect `minimum`, at 80% power.
+
+    Deliberately not a function of the observed effect. Observed effects near zero make
+    that number swing wildly between runs of the same experiment, which is how a
+    sample-size estimate becomes noise dressed as a plan.
+
+    Inflated by the mean cluster size, because documents inside a cluster are not
+    independent and the effective sample is the number of sources.
+    """
+    flat = [value for rows in values_by_cluster.values() for value in rows]
+    if len(flat) < 3 or not minimum:
+        return None
+    mean = sum(flat) / len(flat)
+    variance = sum((v - mean) ** 2 for v in flat) / (len(flat) - 1)
+    if not variance:
+        return None
+    # (z_alpha/2 + z_beta)^2 = (1.96 + 0.8416)^2, 5% two-sided at 80% power.
+    per_source = 7.849 * variance / (minimum ** 2)
+    inflation = len(flat) / max(1, len(values_by_cluster))
+    return int(per_source * inflation) + 1
+
+
+# ----------------------------------------------------------------------- outcomes
 
 @dataclass
 class Outcome:
@@ -56,27 +177,50 @@ class Outcome:
     file: str
     before: float                  # field accuracy as first extracted
     after: float                   # field accuracy after the arm ran
-    gates_before: int              # how many gates fired before
+    gates_before: int
     gates_after: int
-    attempts: int = 0              # model calls this document cost
+    attempts: int = 0
     doc_type: str = ""
     profile: str = "clean"
     error: str = ""                # the arm failed; the document keeps `before`
+    # Raw counts when the caller has them. Field correctness is countable, so damage is
+    # an integer question and does not need a float tolerance to answer.
+    correct_before: int = None
+    correct_after: int = None
+    fields: int = None
+    # What this document is not independent of.
+    source: str = ""
+    layout: object = None
+
+    def __post_init__(self):
+        if not self.source:
+            self.source = source_of(self.file)
 
     @property
     def delta(self) -> float:
         return self.after - self.before
 
     @property
+    def field_gain(self):
+        """Fields gained, as an integer, when the counts are known."""
+        if self.correct_before is None or self.correct_after is None:
+            return None
+        return self.correct_after - self.correct_before
+
+    @property
     def improved(self) -> bool:
-        return self.delta > EPSILON
+        gain = self.field_gain
+        return gain > 0 if gain is not None else self.delta > EPSILON
 
     @property
     def damaged(self) -> bool:
-        return self.delta < -EPSILON
+        gain = self.field_gain
+        return gain < 0 if gain is not None else self.delta < -EPSILON
 
     @property
     def gates_clear(self) -> bool:
+        # A document with nothing firing cannot clear anything; counting it would
+        # credit the loop for silence it did not produce.
         return self.gates_after == 0 and self.gates_before > 0
 
 
@@ -93,92 +237,143 @@ class RepairScore:
     def __len__(self) -> int:
         return len(self.outcomes)
 
+    def _clustered(self, pick) -> dict:
+        out = defaultdict(list)
+        for row in self.outcomes:
+            out[row.source].append(pick(row))
+        return dict(out)
+
     def to_dict(self) -> dict:
         rows = self.outcomes
         if not rows:
             return {"arm": self.arm, "documents": 0}
         improved = [r for r in rows if r.improved]
         damaged = [r for r in rows if r.damaged]
+        ran = [r for r in rows if not r.error]
+        deltas = sorted(r.delta for r in rows)
+
         before = sum(r.before for r in rows) / len(rows)
         after = sum(r.after for r in rows) / len(rows)
+
+        # Document-weighted and field-weighted are different estimands and neither may
+        # silently stand in for the other. A 9-field W-9 and a 24-field onboarding form
+        # get one vote each in the first and 9 against 24 in the second, and the schemas
+        # here span that whole range.
+        graded = sum(r.fields for r in rows if r.fields)
+        field_weighted = None
+        if graded and all(r.correct_before is not None
+                          and r.correct_after is not None for r in rows):
+            gained = sum(r.correct_after - r.correct_before for r in rows)
+            field_weighted = round(gained / graded, 4)
+
         return {
             "arm": self.arm,
             "documents": len(rows),
             "attempts": sum(r.attempts for r in rows),
-            "errors": sum(1 for r in rows if r.error),
+
+            # Failures belong beside the quality figure, not folded into it. A loop
+            # succeeding on 10% of documents and adding 0.20 when it does has an
+            # all-document delta of +0.02 and is operationally useless.
+            "failed": len(rows) - len(ran),
+            # Kept under its old name too. Renaming a key in a report format is how a
+            # reader that still works silently starts showing nothing.
+            "errors": len(rows) - len(ran),
+            "failure_rate": _rate(len(rows) - len(ran), len(rows)),
 
             "accuracy_before": round(before, 4),
             "accuracy_after": round(after, 4),
-            # The headline. Net, because a loop is a single decision to run or not and
-            # what it is worth is the sum of its help and its harm.
+            # Net, because a loop is one decision -- run it or don't -- and what it is
+            # worth is the sum of its help and its harm.
             "net_delta": round(after - before, 4),
+            "net_delta_field_weighted": field_weighted,
+            "net_delta_when_it_ran": (round(sum(r.delta for r in ran) / len(ran), 4)
+                                      if ran else None),
+            "net_delta_ci": cluster_bootstrap(self._clustered(lambda r: r.delta)),
 
             "improved": len(improved),
             "damaged": len(damaged),
             "unchanged": len(rows) - len(improved) - len(damaged),
-            # Reported as a pair, always. "Repaired 60%" means nothing without the
-            # share it broke, and quoting the first alone is how a net-negative loop
-            # gets shipped.
             "improved_rate": _rate(len(improved), len(rows)),
             "damaged_rate": _rate(len(damaged), len(rows)),
+            # A damage rate is an estimate. Eight of forty is 20% and could be 9% or
+            # 36%, and only one of those is shippable.
+            "damaged_rate_ci": wilson(len(damaged), len(rows)),
+            "improved_rate_ci": wilson(len(improved), len(rows)),
             "gain_when_improved": (round(sum(r.delta for r in improved)
                                          / len(improved), 4) if improved else None),
             "loss_when_damaged": (round(sum(r.delta for r in damaged)
                                         / len(damaged), 4) if damaged else None),
 
-            # Gate agreement is a diagnostic, never the score. A loop that clears gates
-            # far more often than it improves documents is optimising against its
-            # critics rather than against the page.
+            # The left tail. For an autonomous loop, "+0.02 mean, worst document -0.71"
+            # and "+0.02 mean, worst document -0.04" are different products, and a mean
+            # cannot tell them apart.
+            "median_delta": round(deltas[len(deltas) // 2], 4),
+            "p10_delta": round(deltas[max(0, int(0.10 * len(deltas)) - 1)], 4),
+            "worst_delta": round(deltas[0], 4),
+
             "gates_clear": sum(1 for r in rows if r.gates_clear),
             "gates_clear_rate": _rate(sum(1 for r in rows if r.gates_clear), len(rows)),
-            # Per document, because the arms saw the same documents and the only
-            # honest comparison between them is paired. Without these the report can
-            # say two arms differ by 0.011 and nothing about whether that survives
-            # another forty documents -- which is exactly the question two runs of
-            # this comparison have already disagreed about.
+
+            "sources": len({r.source for r in rows}),
             "deltas": {r.file: round(r.delta, 4) for r in rows},
-            # Per document alongside the delta, so "the gates went quiet while the
-            # documents got worse" can be checked one document at a time instead of
-            # inferred from two totals. On degraded documents that pattern is the
-            # finding, and a claim that large should not rest on arithmetic done in
-            # a commit message.
             "gates": {r.file: [r.gates_before, r.gates_after] for r in rows},
+            "clusters": {r.file: r.source for r in rows},
         }
 
 
+def no_repair_arm(outcomes) -> "RepairScore":
+    """The control: the original extraction, left alone.
+
+    An explicit arm rather than an implied starting point, because "should repair run
+    at all" is a different hypothesis from "is the guidance worth more than resampling",
+    and a loop can win the second while losing the first. Making the control a real arm
+    means both comparisons are computed the same way and neither can be quietly skipped.
+    """
+    score = RepairScore(arm="no_repair")
+    for row in outcomes:
+        score.add(Outcome(
+            file=row.file, before=row.before, after=row.before,
+            gates_before=row.gates_before, gates_after=row.gates_before,
+            attempts=0, doc_type=row.doc_type, profile=row.profile,
+            correct_before=row.correct_before, correct_after=row.correct_before,
+            fields=row.fields, source=row.source, layout=row.layout))
+    return score
+
+
+# -------------------------------------------------------------------- comparison
+
 def paired(a: dict, b: dict) -> dict:
-    """Arm `a` against arm `b`, document by document.
+    """Arm `a` against arm `b`, document by document, clustered by source.
 
-    Paired, because both arms ran over the identical document set. The unpaired
-    difference of two means throws away the strongest thing known about this
-    comparison -- that a document hard for one arm was hard for the other -- and
-    unpaired noise on forty documents is far larger than the effect being looked for.
+    Paired, because both arms ran the identical document set from the identical starting
+    extraction, so the unpaired difference of two means throws away the strongest thing
+    known -- that a document hard for one arm was hard for the other.
 
-    The interval is the ordinary normal approximation on the mean of the per-document
-    differences. It is reported because the alternative is quoting a difference with no
-    sense of its width, and two runs of this comparison have already come out with
-    opposite signs -- which is not a contradiction, it is what an effect smaller than
-    its own error bar looks like when you run it twice.
+    The interval is a cluster bootstrap. Four degradations of one page are not four
+    observations, and treating them as such narrows every interval in the report.
     """
     shared = sorted(set(a.get("deltas") or {}) & set(b.get("deltas") or {}))
     if len(shared) < 3:
-        return {"documents": len(shared), "mean": None, "stderr": None,
-                "interval": None, "resolvable": False}
-    diffs = [a["deltas"][key] - b["deltas"][key] for key in shared]
-    n = len(diffs)
-    mean = sum(diffs) / n
-    variance = sum((d - mean) ** 2 for d in diffs) / (n - 1) if n > 1 else 0.0
-    stderr = (variance / n) ** 0.5
-    half = 1.96 * stderr
+        return {"documents": len(shared), "mean": None, "interval": None,
+                "resolvable": False, "clusters": 0, "needed": None,
+                "better": 0, "worse": 0, "tied": 0}
+    clusters = a.get("clusters") or {}
+    by_cluster = defaultdict(list)
+    for key in shared:
+        by_cluster[clusters.get(key, key)].append(a["deltas"][key] - b["deltas"][key])
+
+    diffs = [d for rows in by_cluster.values() for d in rows]
+    mean = sum(diffs) / len(diffs)
+    interval = cluster_bootstrap(dict(by_cluster))
     return {
-        "documents": n,
+        "documents": len(diffs),
+        "clusters": len(by_cluster),
         "mean": round(mean, 4),
-        "stderr": round(stderr, 4),
-        "interval": [round(mean - half, 4), round(mean + half, 4)],
-        # Whether the interval excludes zero. When it does not, the difference has not
-        # been measured -- it has been observed once, and the honest report says so
-        # rather than quoting the point estimate.
-        "resolvable": (mean - half > 0) or (mean + half < 0),
+        "interval": interval,
+        # The interval excluding zero is the only thing that licenses a claim. When it
+        # does not, the difference has been observed once, not measured.
+        "resolvable": bool(interval and (interval[0] > 0 or interval[1] < 0)),
+        "needed": documents_needed(dict(by_cluster)),
         "better": sum(1 for d in diffs if d > EPSILON),
         "worse": sum(1 for d in diffs if d < -EPSILON),
         "tied": sum(1 for d in diffs if abs(d) <= EPSILON),
@@ -186,29 +381,34 @@ def paired(a: dict, b: dict) -> dict:
 
 
 def compare(arms: dict) -> dict:
-    """Several arms scored together, each against the blind re-run.
+    """Every arm against the two controls that matter.
 
-    `arms` is {name: RepairScore}. The arm named `rerun` is the baseline if present:
-    the extractor asked the same question again with no feedback. Everything else is
-    reported as a delta from it, because that is the only comparison that isolates what
-    the feedback was worth from what a second sample was worth.
+    `no_repair` answers "should this run at all" and `rerun` answers "is the guidance
+    worth more than another sample". Both are reported for every other arm, because a
+    loop that beats one and loses the other is the interesting case and it is this
+    corpus's actual result.
     """
     scored = {name: score.to_dict() for name, score in arms.items()}
     baseline = scored.get("rerun")
+    control = scored.get("no_repair")
+
+    pairs, absolute = {}, {}
     for name, row in scored.items():
-        if not baseline or name == "rerun" or not row.get("documents"):
-            row["over_rerun"] = None
+        row["over_rerun"] = None
+        if not row.get("documents"):
             continue
-        row["over_rerun"] = round((row["net_delta"] or 0)
-                                  - (baseline["net_delta"] or 0), 4)
-    pairs = {}
-    if baseline:
-        for name, row in scored.items():
-            if name != "rerun" and row.get("documents"):
-                pairs[name] = paired(row, baseline)
+        if baseline and name not in ("rerun", "no_repair"):
+            row["over_rerun"] = round((row["net_delta"] or 0)
+                                      - (baseline["net_delta"] or 0), 4)
+            pairs[name] = paired(row, baseline)
+        if control and name != "no_repair":
+            absolute[name] = paired(row, control)
+
     return {"arms": scored,
             "baseline": "rerun" if baseline else None,
+            "control": "no_repair" if control else None,
             "paired": pairs,
+            "absolute": absolute,
             "documents": max((r.get("documents", 0) for r in scored.values()),
                              default=0)}
 
@@ -216,20 +416,15 @@ def compare(arms: dict) -> dict:
 def goodhart(arm: dict) -> dict:
     """Did the gates go quiet on the same documents that got worse?
 
-    The aggregate version of this question -- 52 gates cleared, 52 documents damaged --
-    is suggestive and proves nothing. Two disjoint groups of 52 would produce identical
-    totals and mean something entirely different: rules being satisfied on one set of
-    documents while a separate set degraded. Only the per-document join separates
-    "silencing the critics" from "two unrelated things happened".
+    The aggregate -- 52 cleared, 52 damaged -- is suggestive and proves nothing. Two
+    disjoint groups of 52 give identical totals and mean something entirely different.
+    Only the per-document join separates "silencing the critics" from "two unrelated
+    things happened".
 
-    The cell that matters is `cleared_and_damaged`: a document that stopped tripping
-    every rule *and* came back further from the truth. There is no benign reading of
-    that. It is what blanking the fields a rule reads produces, and it is the reason
-    success in this module is defined against the corpus and never against the gates.
-
-    `lift` is how much more likely a damaged document was to clear its gates than an
-    undamaged one. Above 1.0 means the rules are being satisfied by exactly the changes
-    that hurt.
+    The two conditional probabilities are reported before the ratio, because "55% of
+    damaged documents cleared their gates against 12% of the rest" is far harder to
+    misread than "4.4x", and the ratio carries a wide interval that a bare multiple
+    hides entirely.
     """
     deltas = arm.get("deltas") or {}
     gates = arm.get("gates") or {}
@@ -244,7 +439,6 @@ def goodhart(arm: dict) -> dict:
     for key in shared:
         delta = deltas[key]
         before, after = gates[key]
-        # Only a document that had something to clear can clear it.
         cleared = before > 0 and after == 0
         state = ("damaged" if delta < -EPSILON
                  else "improved" if delta > EPSILON else "unchanged")
@@ -258,21 +452,33 @@ def goodhart(arm: dict) -> dict:
 
     rate_damaged = cleared_damaged / damaged if damaged else None
     rate_intact = cleared_ok / intact if intact else None
+    ratio_ci = None
+    if rate_damaged and rate_intact:
+        # Katz log interval on the risk ratio. A bare multiple reads as precise; on
+        # counts this size it is anything but.
+        log_rr = math.log(rate_damaged / rate_intact)
+        se = math.sqrt(max(0.0, (1 - rate_damaged) / cleared_damaged
+                           + (1 - rate_intact) / max(1, cleared_ok)))
+        ratio_ci = [round(math.exp(log_rr - 1.96 * se), 3),
+                    round(math.exp(log_rr + 1.96 * se), 3)]
+
     return {
-        "documents": len(shared),
-        "available": True,
-        **cells,
+        "documents": len(shared), "available": True, **cells,
+        "damaged": damaged, "not_damaged": intact,
         "clear_rate_when_damaged": (round(rate_damaged, 4)
                                     if rate_damaged is not None else None),
+        "clear_rate_when_damaged_ci": wilson(cleared_damaged, damaged),
         "clear_rate_otherwise": (round(rate_intact, 4)
                                  if rate_intact is not None else None),
+        "clear_rate_otherwise_ci": wilson(cleared_ok, intact),
         "lift": (round(rate_damaged / rate_intact, 3)
                  if rate_damaged and rate_intact else None),
+        "lift_ci": ratio_ci,
     }
 
 
 def by_slice(score: RepairScore, key: str = "doc_type") -> list:
-    """Per type or per profile. Repair is not uniform and an average hides which half."""
+    """Per type or per profile. Exploratory only -- see the declared hierarchy."""
     groups = defaultdict(list)
     for row in score.outcomes:
         groups[getattr(row, key, "") or "unknown"].append(row)
@@ -290,23 +496,7 @@ def by_slice(score: RepairScore, key: str = "doc_type") -> list:
     return out
 
 
-def _needed(pair) -> str:
-    """Roughly how many documents would put the observed effect outside the interval.
-
-    Standard error falls as 1/sqrt(n), so the multiplier is (1.96 * sd / effect)^2.
-    Deliberately rough and rendered as an order of magnitude: the point is to say
-    whether the answer is another forty documents or another four thousand, which is a
-    decision about whether the question is worth pursuing at all.
-    """
-    if not pair.get("mean") or not pair.get("stderr"):
-        return "many more"
-    n = pair["documents"]
-    sd = pair["stderr"] * (n ** 0.5)
-    needed = ((1.96 * sd) / abs(pair["mean"])) ** 2
-    if needed > 100000:
-        return "far more than this corpus holds"
-    return f"~{int(needed):,}"
-
+# ------------------------------------------------------------------------ render
 
 def _fmt(value, width=8, digits=3, sign=False):
     if value is None:
@@ -314,80 +504,116 @@ def _fmt(value, width=8, digits=3, sign=False):
     return f"{value:>{'+' if sign else ''}{width}.{digits}f}"
 
 
+def _interval(pair) -> str:
+    if not pair or not pair.get("interval"):
+        return "--"
+    low, high = pair["interval"]
+    return f"[{low:+.4f}, {high:+.4f}]"
+
+
 def render(data: dict, slices: dict = None) -> str:
     out = ["", "REPAIR  -  did the second attempt help", ""]
     out.append(f"  documents            {data.get('documents', 0):>8}")
+    arms = data.get("arms") or {}
+    if data.get("control"):
+        out.append("  control              no_repair, the original extraction")
+    else:
+        out.append("  control                  none   <- no no_repair arm, so nothing")
+        out.append("     below answers whether repair should run at all")
     if data.get("baseline"):
         out.append("  baseline             blind re-run, same prompt, no feedback")
     else:
-        out.append("  baseline                 none   <- no blind re-run arm was run;")
-        out.append("     any gain below includes whatever a second sample is worth")
+        out.append("  baseline                 none   <- no blind re-run arm, so any")
+        out.append("     gain below includes what a second sample is worth")
+
+    if not any(r.get("documents") for r in arms.values()):
+        out.append("")
+        out.append("  no documents.")
+        return "\n".join(out)
+
     out.append("")
-    out.append(f"  {'arm':<14}{'calls':>7}{'before':>9}{'after':>9}{'net':>9}"
-               f"{'better':>8}{'worse':>7}{'gates':>7}{'vs rerun':>10}")
-    for name, row in data["arms"].items():
+    out.append(f"  {'arm':<12}{'calls':>6}{'fail':>6}{'net':>9}{'field-wt':>10}"
+               f"{'better':>8}{'worse':>7}{'worst':>9}{'gates':>7}")
+    for name, row in arms.items():
         if not row.get("documents"):
-            out.append(f"  {name:<14}{'no documents':>50}")
             continue
         out.append(
-            f"  {name:<14}{row['attempts']:>7}"
-            f"{_fmt(row['accuracy_before'], 9)}{_fmt(row['accuracy_after'], 9)}"
+            f"  {name:<12}{row['attempts']:>6}{row['failed']:>6}"
             f"{_fmt(row['net_delta'], 9, sign=True)}"
-            f"{row['improved']:>8}{row['damaged']:>7}{row['gates_clear']:>7}"
-            f"{_fmt(row.get('over_rerun'), 10, sign=True)}")
-    harmful = [name for name, row in data["arms"].items()
-               if row.get("documents") and (row.get("net_delta") or 0) < 0]
+            f"{_fmt(row.get('net_delta_field_weighted'), 10, sign=True)}"
+            f"{row['improved']:>8}{row['damaged']:>7}"
+            f"{_fmt(row['worst_delta'], 9, sign=True)}{row['gates_clear']:>7}")
+    out.append("  net is document-weighted; field-wt weights by fields graded. They")
+    out.append("  answer different questions and neither stands in for the other.")
+
+    harmful = [n for n, r in arms.items()
+               if r.get("documents") and (r.get("net_delta") or 0) < 0
+               and n != "no_repair"]
     if harmful:
         out.append("")
         out.append(f"  NET-NEGATIVE: {', '.join(harmful)} left documents worse than "
                    f"they were found.")
         out.append("  Repair is optional. An arm that scores below zero should be off.")
-    out.append("")
-    out.append("  `better` and `worse` are documents, scored against the corpus labels.")
-    out.append("  `gates` is how many stopped tripping a rule -- a diagnostic, not the")
-    out.append("  score. A loop clearing far more gates than it improves documents is")
-    out.append("  silencing its critics, which it can do by blanking the fields they read.")
 
-    for name, pair in (data.get("paired") or {}).items():
-        out.append("")
+    out.append("")
+    out.append("  PRIMARY  -  should repair run at all (against no_repair)")
+    if not data.get("absolute"):
+        out.append("    not computed: no control arm.")
+    for name, pair in (data.get("absolute") or {}).items():
         if pair["mean"] is None:
-            out.append(f"  {name} against rerun: too few shared documents to compare.")
             continue
-        low, high = pair["interval"]
-        out.append(f"  {name} against rerun, paired over {pair['documents']} documents:")
-        out.append(f"    mean difference {pair['mean']:+.4f}  "
-                   f"95% interval [{low:+.4f}, {high:+.4f}]")
-        out.append(f"    better on {pair['better']}, worse on {pair['worse']}, "
+        verdict = ("worse than doing nothing" if pair["mean"] < 0
+                   else "better than doing nothing")
+        settled = "" if pair["resolvable"] else "  (interval spans zero)"
+        out.append(f"    {name:<12}{_fmt(pair['mean'], 9, 4, sign=True)}   "
+                   f"{_interval(pair)}   {verdict}{settled}")
+    out.append("    clustered by source document, so four degradations of one page")
+    out.append("    count once rather than four times")
+
+    out.append("")
+    out.append("  SECONDARY  -  is the guidance worth more than resampling "
+               "(against rerun)")
+    for name, pair in (data.get("paired") or {}).items():
+        if pair["mean"] is None:
+            out.append(f"    {name}: too few shared documents to compare.")
+            continue
+        out.append(f"    {name:<12}{_fmt(pair['mean'], 9, 4, sign=True)}   "
+                   f"{_interval(pair)}   "
+                   f"{pair['clusters']} sources, {pair['documents']} documents")
+        out.append(f"      better on {pair['better']}, worse on {pair['worse']}, "
                    f"tied on {pair['tied']}")
         if not pair["resolvable"]:
-            out.append("    The interval does not exclude zero. This difference has")
-            out.append("    not been measured, only observed once -- do not quote the")
-            out.append(f"    point estimate. Resolving it needs roughly "
-                       f"{_needed(pair)} documents.")
-        elif pair["mean"] > 0:
-            out.append("    The feedback is worth something beyond a second sample.")
+            need = pair.get("needed")
+            # Kept on one line: the phrase is what a reader greps for, and splitting
+            # it across a wrap is how an assertion about it silently stops matching.
+            out.append("      The interval does not exclude zero -- observed once,")
+            out.append("      not measured, so do not quote the point estimate.")
+            out.append(f"      Detecting a {MIN_USEFUL_DELTA:+.2f} effect needs about "
+                       f"{need if need else 'many more'} documents.")
+        elif harmful:
+            out.append("      Resolvable, but both arms are net-negative against doing")
+            out.append("      nothing. This is less harmful, not helpful.")
+            out.append("      Neither should run on these documents.")
         else:
-            out.append("    The feedback is worse than a second sample alone.")
-        # A resolved win between two arms says nothing about whether either should
-        # run. Both can be harmful, and then "beats the baseline" means "does less
-        # damage" -- which is the single most quotable-out-of-context line this
-        # report can produce, so the qualification is attached to it rather than
-        # left further down the page.
-        arm_row = data["arms"].get(name) or {}
-        base_row = data["arms"].get("rerun") or {}
-        if (arm_row.get("net_delta") or 0) < 0 and (base_row.get("net_delta") or 0) < 0:
-            out.append("    But BOTH arms are net-negative here. This is less harmful,")
-            out.append("    not helpful. Neither should run on these documents.")
+            out.append("      The feedback is worth something beyond a second sample.")
 
-    for name, row in data["arms"].items():
-        if row.get("documents") and row["damaged"] > row["improved"]:
-            out.append("")
-            out.append(f"  {name} damaged more documents than it improved "
-                       f"({row['damaged']} against {row['improved']}).")
+    out.append("")
+    out.append("  DAMAGE")
+    out.append(f"  {'arm':<12}{'damaged':>9}{'rate':>8}{'95% interval':>22}"
+               f"{'median':>9}{'p10':>9}")
+    for name, row in arms.items():
+        if not row.get("documents") or name == "no_repair":
+            continue
+        ci = row.get("damaged_rate_ci")
+        band = f"[{ci[0]:.1%}, {ci[1]:.1%}]" if ci else "--"
+        out.append(f"  {name:<12}{row['damaged']:>9}"
+                   f"{(row['damaged_rate'] or 0):>8.1%}{band:>22}"
+                   f"{_fmt(row['median_delta'], 9, sign=True)}"
+                   f"{_fmt(row['p10_delta'], 9, sign=True)}")
 
-    for name, row in data["arms"].items():
+    for name, row in arms.items():
         table = goodhart(row)
-        if not table.get("available"):
+        if not table.get("available") or name == "no_repair":
             continue
         cad = table["cleared_and_damaged"]
         if not cad and not table["cleared_and_improved"]:
@@ -401,20 +627,33 @@ def render(data: dict, slices: dict = None) -> str:
         out.append(f"  {'gates still firing':<22}{table['held_and_damaged']:>10}"
                    f"{table['held_and_improved']:>10}"
                    f"{table['held_and_unchanged']:>11}")
+        if (table["clear_rate_when_damaged"] is not None
+                and table["clear_rate_otherwise"] is not None):
+            hurt = table.get("clear_rate_when_damaged_ci") or [0, 0]
+            other = table.get("clear_rate_otherwise_ci") or [0, 0]
+            out.append(f"  {table['clear_rate_when_damaged']:.1%} of damaged documents "
+                       f"cleared their gates   [{hurt[0]:.1%}, {hurt[1]:.1%}]")
+            out.append(f"  {table['clear_rate_otherwise']:.1%} of the rest did"
+                       f"                         [{other[0]:.1%}, {other[1]:.1%}]")
+        if table.get("lift"):
+            band = (f"  [{table['lift_ci'][0]}x, {table['lift_ci'][1]}x]"
+                    if table.get("lift_ci") else "")
+            out.append(f"  risk ratio {table['lift']}x{band}")
         if cad:
             out.append(f"  {cad} documents stopped tripping every rule AND came back "
                        f"further from the truth.")
             out.append("  There is no benign reading of that cell.")
-        if table.get("lift") and table["lift"] > 1.0:
-            out.append(f"  A damaged document was {table['lift']:.2f}x more likely to "
-                       f"clear its gates than an undamaged one:")
-            out.append(f"  {table['clear_rate_when_damaged']:.1%} against "
-                       f"{table['clear_rate_otherwise']:.1%}. The rules are being "
-                       f"satisfied by the changes that hurt.")
+
+    for name, row in arms.items():
+        if (row.get("documents") and name != "no_repair"
+                and row["damaged"] > row["improved"]):
+            out.append("")
+            out.append(f"  {name} damaged more documents than it improved "
+                       f"({row['damaged']} against {row['improved']}).")
 
     for key, rows in (slices or {}).items():
         out.append("")
-        out.append(f"  BY {key.replace('_', ' ').upper()}")
+        out.append(f"  BY {key.replace('_', ' ').upper()}   (exploratory)")
         out.append(f"  {key:<24}{'n':>6}{'net':>9}{'better':>8}{'worse':>7}")
         for row in rows:
             out.append(f"  {str(row[key])[:23]:<24}{row['documents']:>6}"
