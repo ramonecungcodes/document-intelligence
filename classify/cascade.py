@@ -157,7 +157,7 @@ class Cascade:
         why = self._should_escalate(first)
         if not why:
             first.engine = f"cascade:{first.engine or self.primary_name}"
-            return first
+            return self._floor(first)
 
         try:
             second_doc = self._text_for(path, document, corpus)
@@ -191,12 +191,27 @@ class Cascade:
             doc_type=resolved.doc_type,
             variant=resolved.variant or first.variant,
             confidence=first.confidence,
+            margin=first.margin,
             runner_up=first.doc_type if arbitrated else first.runner_up,
             evidence=f"escalated ({why}); {self.secondary_name} said "
                      f"{second.doc_type or 'nothing'}"
                      f"{'' if arbitrated else ', not taken'}",
             engine=f"cascade:{self.primary_name}->{self.secondary_name}",
             seconds=time.time() - started)
-        if self.abstain_below and (out.confidence or 0) < self.abstain_below:
-            out.doc_type, out.variant = "", ""
-        return out
+        return self._floor(out)
+
+    def _floor(self, result: Classification) -> Classification:
+        """Apply the cascade's own confidence floor, on both paths out of `classify`.
+
+        Both, because it used to be applied on one. A document that escalated was
+        floored and a document that did not was returned untouched, so the floor only
+        governed the minority of documents the primary was already unsure about --
+        exactly the wrong half. It read as working: the members are built with their
+        own abstention disabled, deliberately, so the plugin-level `abstain_below = 0.9`
+        in the manifest is inert under a cascade and nothing anywhere reported a floor
+        that was not being applied.
+        """
+        if self.abstain_below and (result.confidence or 0) < self.abstain_below:
+            result.withheld = result.label
+            result.doc_type, result.variant = "", ""
+        return result

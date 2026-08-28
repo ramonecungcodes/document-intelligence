@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calibration</title>
+<style>/* The design system, lifted from the Docwise handoff and named.
+ *
+ * The handoff carries every style inline, which is fine for a mockup and wrong for a
+ * thing that has to stay consistent while its content changes. Naming them is the
+ * whole port: a value that appears in one place can be adjusted, and a value that
+ * appears in forty cannot.
+ *
+ * Semantic colour is deliberately separate from the accent. The accent says "this is
+ * interactive"; pass/warn/fail say "this is the state of the measurement". A dashboard
+ * that uses one hue for both makes every healthy row look like a button.
+ *
+ * Dark is defined for all three of the viewer's states -- an explicit choice stamps
+ * data-theme, and the default system setting stamps nothing, so prefers-color-scheme
+ * has to carry it alone.
+ */
+:root {
+  --ground: #f6f7f9;
+  --surface: #ffffff;
+  --surface-sunken: #fafbfc;
+  --chrome: #12151c;
+  --chrome-line: #1e232d;
+  --chrome-text: #a8b0be;
+  --chrome-bright: #f2f4f8;
+  --chrome-faint: #5d6675;
+
+  --border: #e4e7ed;
+  --border-strong: #d8dce4;
+  --rule: #eceef2;
+
+  --ink: #14171f;
+  --ink-muted: #6c7482;
+  --ink-faint: #8a93a1;
+
+  --accent: #3b6ef5;
+  --accent-press: #2a53c9;
+  --accent-tint: #eef2fe;
+  --accent-edge: #cfdcfd;
+
+  /* Green, amber, red. Read together as a scale, so they are given matching weight
+   * rather than matching saturation -- amber at true saturation would out-shout both
+   * neighbours and turn every warning row into the loudest thing on the page. */
+  --pass: #0d8a5f;
+  --pass-tint: #e9f7f0;
+  --pass-ink: #0d6f4e;
+  --warn: #b26a00;
+  --warn-tint: #fdf4e6;
+  --warn-ink: #8a5a00;
+  --fail: #c8324c;
+  --fail-tint: #fbe9ec;
+  --fail-ink: #8f2237;
+
+  --font: 'Helvetica Neue', Helvetica, Arial, system-ui, sans-serif;
+  /* Every number on this page is monospaced. Digits that do not line up between rows
+   * cannot be compared down a column, which is the only reason to put them in one. */
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  --r-sm: 3px;
+  --r: 7px;
+  --r-lg: 11px;
+  --r-pill: 20px;
+
+  --shadow: 0 1px 2px rgba(20, 23, 31, .04);
+  --shadow-lift: 0 4px 16px rgba(20, 23, 31, .08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0f1319;
+    --surface: #171b23;
+    --surface-sunken: #12161d;
+    --chrome: #0b0e13;
+    --chrome-line: #1a1f28;
+
+    --border: #262d38;
+    --border-strong: #333c49;
+    --rule: #1f252f;
+
+    --ink: #e8ebf1;
+    --ink-muted: #a3aab7;
+    --ink-faint: #8a93a1;
+
+    --accent: #6f95ff;
+    --accent-press: #a9c2ff;
+    --accent-tint: #182034;
+    --accent-edge: #2b3a5c;
+
+    --pass: #34d399;
+    --pass-tint: #10231c;
+    --pass-ink: #6ee7b7;
+    --warn: #e0a33a;
+    --warn-tint: #241c0e;
+    --warn-ink: #f0c674;
+    --fail: #fb7185;
+    --fail-tint: #2a1219;
+    --fail-ink: #fda4af;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+    --shadow-lift: 0 4px 16px rgba(0, 0, 0, .45);
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground: #0f1319;
+  --surface: #171b23;
+  --surface-sunken: #12161d;
+  --chrome: #0b0e13;
+  --chrome-line: #1a1f28;
+
+  --border: #262d38;
+  --border-strong: #333c49;
+  --rule: #1f252f;
+
+  --ink: #e8ebf1;
+  --ink-muted: #a3aab7;
+  --ink-faint: #8a93a1;
+
+  --accent: #6f95ff;
+  --accent-press: #a9c2ff;
+  --accent-tint: #182034;
+  --accent-edge: #2b3a5c;
+
+  --pass: #34d399;
+  --pass-tint: #10231c;
+  --pass-ink: #6ee7b7;
+  --warn: #e0a33a;
+  --warn-tint: #241c0e;
+  --warn-ink: #f0c674;
+  --fail: #fb7185;
+  --fail-tint: #2a1219;
+  --fail-ink: #fda4af;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow-lift: 0 4px 16px rgba(0, 0, 0, .45);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font);
+  background: var(--ground);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.shell { display: flex; min-height: 100vh; }
+
+/* ---- sidebar: the pipeline, in the order a document moves through it ---- */
+.rail {
+  width: 236px; flex: 0 0 236px; background: var(--chrome);
+  color: var(--chrome-text); display: flex; flex-direction: column;
+}
+.rail-head {
+  height: 58px; display: flex; align-items: center; gap: 10px;
+  padding: 0 16px; border-bottom: 1px solid var(--chrome-line);
+}
+.mark {
+  width: 24px; height: 24px; border-radius: 6px; background: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 12px; font-weight: 700;
+}
+.rail-name {
+  font-size: 14px; font-weight: 600; color: var(--chrome-bright);
+  letter-spacing: -.2px;
+}
+.tag {
+  margin-left: auto; font-size: 9px; font-family: var(--mono);
+  color: var(--chrome-faint); border: 1px solid #2a313d;
+  padding: 2px 5px; border-radius: 4px;
+}
+.rail-body { flex: 1; padding: 14px 10px; overflow-y: auto; }
+.rail-group {
+  font-size: 9px; letter-spacing: 1.4px; color: var(--chrome-faint);
+  padding: 0 10px 7px; font-weight: 700;
+}
+.rail-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; border-radius: var(--r);
+  font-size: 12.5px; color: var(--chrome-text); margin-bottom: 1px;
+}
+.rail-item.on { background: #1c2029; color: var(--chrome-bright); font-weight: 600; }
+.rail-item .n {
+  margin-left: auto; font-family: var(--mono); font-size: 10px;
+  color: var(--chrome-faint);
+}
+.rail-foot {
+  border-top: 1px solid var(--chrome-line); padding: 12px 16px;
+  font-size: 10px; font-family: var(--mono); color: var(--chrome-faint);
+  line-height: 1.7;
+}
+
+/* ---- main ---- */
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.head {
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: 18px 28px; display: flex; align-items: flex-start; gap: 20px;
+}
+.head h1 { margin: 0; font-size: 21px; font-weight: 600; letter-spacing: -.4px; }
+.head .sub { margin: 3px 0 0; font-size: 12px; color: var(--ink-muted); }
+.head .right { margin-left: auto; text-align: right; }
+.body { padding: 22px 28px 48px; display: flex; flex-direction: column; gap: 18px; }
+
+/* ---- cards ---- */
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-lg); padding: 18px 20px; box-shadow: var(--shadow);
+}
+.card-head {
+  display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px;
+}
+.card h2 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: -.1px; }
+.card .hint {
+  margin-left: auto; font-size: 10px; color: var(--ink-faint);
+  font-family: var(--mono);
+}
+.card-missing { border-style: dashed; background: var(--surface-sunken); }
+.prose { margin: 0 0 10px; font-size: 12px; color: var(--ink-muted); max-width: 62ch; }
+.command {
+  margin: 0; font-family: var(--mono); font-size: 11px;
+  background: var(--chrome); color: var(--chrome-bright);
+  padding: 9px 12px; border-radius: var(--r); overflow-x: auto;
+}
+
+/* ---- layout helpers ---- */
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, 1fr)); gap: 14px; }
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+@media (max-width: 1080px) { .two { grid-template-columns: minmax(0, 1fr); } }
+
+.kpi {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-lg); padding: 15px 16px 13px; box-shadow: var(--shadow);
+}
+.kpi-label {
+  font-size: 10px; letter-spacing: 1.2px; font-weight: 700;
+  color: var(--ink-faint); margin-bottom: 8px;
+}
+.kpi-row { display: flex; align-items: baseline; gap: 7px; }
+.kpi-value {
+  font-family: var(--mono); font-size: 26px; font-weight: 700;
+  letter-spacing: -1px; font-variant-numeric: tabular-nums;
+}
+.kpi-delta { font-family: var(--mono); font-size: 11px; font-weight: 700; }
+.kpi-up { color: var(--pass); }
+.kpi-down { color: var(--fail); }
+.kpi-spark { margin: 10px 0 6px; }
+.kpi-note { font-size: 10.5px; color: var(--ink-faint); line-height: 1.4; }
+
+/* ---- the floor control ---- */
+.floor {
+  display: flex; align-items: center; gap: 14px; margin-bottom: 16px;
+  padding: 12px 14px; background: var(--surface-sunken);
+  border: 1px solid var(--border); border-radius: var(--r);
+}
+.floor label {
+  font-size: 10px; letter-spacing: 1.2px; font-weight: 700; color: var(--ink-faint);
+}
+.floor input[type=range] { flex: 1; accent-color: var(--accent); min-width: 110px; }
+.floor .value {
+  font-family: var(--mono); font-size: 17px; font-weight: 700;
+  font-variant-numeric: tabular-nums; min-width: 52px; text-align: right;
+}
+.readout { display: flex; flex-wrap: wrap; gap: 22px; margin-top: 14px; }
+.readout div { min-width: 92px; }
+.readout .k {
+  font-size: 9.5px; letter-spacing: 1.1px; font-weight: 700; color: var(--ink-faint);
+}
+.readout .v {
+  font-family: var(--mono); font-size: 18px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- tables ---- */
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th {
+  text-align: left; font-size: 9.5px; letter-spacing: 1.1px; font-weight: 700;
+  color: var(--ink-faint); padding: 0 10px 8px; white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+th.r, td.r { text-align: right; }
+td {
+  padding: 9px 10px; border-bottom: 1px solid var(--rule);
+  font-variant-numeric: tabular-nums;
+}
+tbody tr:last-child td { border-bottom: none; }
+td.mono, th.mono { font-family: var(--mono); }
+.meter {
+  display: inline-block; width: 84px; height: 5px; border-radius: 3px;
+  background: var(--rule); overflow: hidden; vertical-align: middle;
+  margin-right: 8px;
+}
+.meter i { display: block; height: 100%; border-radius: 3px; }
+
+.pill {
+  display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 9px;
+  border-radius: var(--r-pill); white-space: nowrap;
+}
+.pill-pass { background: var(--pass-tint); color: var(--pass-ink); }
+.pill-warn { background: var(--warn-tint); color: var(--warn-ink); }
+.pill-fail { background: var(--fail-tint); color: var(--fail-ink); }
+.pill-flat { background: var(--accent-tint); color: var(--accent-press); }
+
+/* ---- the finding card, where the mockup put a drift alert ---- */
+.finding { border-left: 3px solid var(--fail); }
+.finding .dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--fail);
+  display: inline-block; margin-right: 7px; vertical-align: middle;
+}
+.finding table { margin-top: 12px; }
+
+.legend {
+  display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px;
+  font-size: 10.5px; color: var(--ink-faint);
+}
+.legend span { display: flex; align-items: center; gap: 6px; }
+.swatch { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.dashed {
+  width: 14px; border-top: 2px dashed var(--ink-faint); display: inline-block;
+}
+.foot {
+  font-size: 10.5px; color: var(--ink-faint); font-family: var(--mono);
+  line-height: 1.8;
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav class="rail">
+    <div class="rail-head">
+      <div class="mark">D</div>
+      <div class="rail-name">DocumentIntelligence</div>
+      <div class="tag">IDP</div>
+    </div>
+    <div class="rail-body">
+      <div class="rail-group">PIPELINE</div>
+      <div class="rail-item">Splitter<span class="n">every_page</span></div><div class="rail-item">Normalizer<span class="n">doctr</span></div><div class="rail-item">Classifier<span class="n">cascade</span></div><div class="rail-item">Extractor<span class="n">openai</span></div><div class="rail-item">Validator<span class="n">5 rules</span></div>
+      <div class="rail-group" style="margin-top:16px">MEASUREMENT</div>
+      <div class="rail-item on">Calibration</div>
+      <div class="rail-item">Extraction</div>
+      <div class="rail-item">Validation</div>
+      <div class="rail-item">Splitting</div>
+    </div>
+    <div class="rail-foot">generated by<br>python -m web.build</div>
+  </nav>
+  <main class="main">
+    <header class="head">
+      <div>
+        <h1>Calibration</h1>
+        <p class="sub">Is the confidence real, and where does the floor go</p>
+      </div>
+      <div class="right">
+        <span class="pill pill-flat">design holdout</span>
+      </div>
+    </header>
+    <div class="body">
+      <div class="kpis"><div class="kpi"><div class="kpi-label">COVERAGE AT FLOOR</div><div class="kpi-row"><span class="kpi-value">47.2%</span></div><div class="kpi-note">floor 0.85, held to 99% accuracy</div></div><div class="kpi"><div class="kpi-label">ERRORS THROUGH</div><div class="kpi-row"><span class="kpi-value">0</span></div><div class="kpi-note">of 144 decisions; 30 declined</div></div><div class="kpi"><div class="kpi-label">CONFIDENCE GAP</div><div class="kpi-row"><span class="kpi-value">-0.003</span></div><div class="kpi-note">underconfident - the safe direction</div></div><div class="kpi"><div class="kpi-label">ECE</div><div class="kpi-row"><span class="kpi-value">0.063</span></div><div class="kpi-note">mean gap between stated and observed</div></div><div class="kpi"><div class="kpi-label">FIELD ACCURACY</div><div class="kpi-row"><span class="kpi-value">92.3%</span></div><div class="kpi-note">1,974 fields graded</div></div><div class="kpi"><div class="kpi-label">EXACT MATCH</div><div class="kpi-row"><span class="kpi-value">78.1%</span></div><div class="kpi-note">175 documents scored</div></div></div><section class="card"><div class="card-head"><h2>Where the confidence floor goes</h2><span class="hint">design holdout &middot; 144 decisions</span></div><p class="prose">Answer at or above the floor, send the rest to a person. The dashed line is what declining the same number of documents at random would give &mdash; the overall accuracy, unchanged. A floor is worth only the distance between the two.</p><div class="floor"><label for="floor">FLOOR</label><input type="range" id="floor" min="0" max="100" step="5" value="85" aria-label="confidence floor"><span class="value" id="floor-value">--</span></div><svg viewBox="0 0 520 260" width="100%" role="img" aria-label="Coverage against accuracy"><line x1="42" y1="230.0" x2="508" y2="230.0" stroke="var(--rule)" stroke-width="1" /><text x="34" y="233.5" text-anchor="end" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">0.75</text><line x1="42" y1="175.5" x2="508" y2="175.5" stroke="var(--rule)" stroke-width="1" /><text x="34" y="179.0" text-anchor="end" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">0.81</text><line x1="42" y1="121.0" x2="508" y2="121.0" stroke="var(--rule)" stroke-width="1" /><text x="34" y="124.5" text-anchor="end" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">0.88</text><line x1="42" y1="66.5" x2="508" y2="66.5" stroke="var(--rule)" stroke-width="1" /><text x="34" y="70.0" text-anchor="end" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">0.94</text><line x1="42" y1="12.0" x2="508" y2="12.0" stroke="var(--rule)" stroke-width="1" /><text x="34" y="15.5" text-anchor="end" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">1.00</text><line x1="42" y1="194.9" x2="508" y2="194.9" stroke="var(--ink-faint)" stroke-width="1.4" stroke-dasharray="5 4" /><polygon points="220.0,230 220.0,12.0 245.9,12.0 262.0,12.0 281.5,23.9 310.6,33.2 330.0,41.6 359.2,56.8 401.2,91.1 443.3,132.4 482.1,167.0 498.3,186.4 504.8,190.1 508.0,194.9 508.0,194.9 508.0,194.9 508.0,194.9 508.0,194.9 508.0,194.9 508.0,194.9 508.0,194.9 508.0,230" fill="var(--accent)" fill-opacity=".10" /><polyline points="220.0,12.0 245.9,12.0 262.0,12.0 281.5,23.9 310.6,33.2 330.0,41.6 359.2,56.8 401.2,91.1 443.3,132.4 482.1,167.0 498.3,186.4 504.8,190.1 508.0,194.9 508.0,194.9 508.0,194.9 508.0,194.9 508.0,194.9 508.0,194.9 508.0,194.9 508.0,194.9" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" /><circle cx="220.0" cy="12.0" r="2.4" fill="var(--accent)" data-floor="0.95" /><circle cx="245.9" cy="12.0" r="2.4" fill="var(--accent)" data-floor="0.9" /><circle cx="262.0" cy="12.0" r="2.4" fill="var(--accent)" data-floor="0.85" /><circle cx="281.5" cy="23.9" r="2.4" fill="var(--accent)" data-floor="0.8" /><circle cx="310.6" cy="33.2" r="2.4" fill="var(--accent)" data-floor="0.75" /><circle cx="330.0" cy="41.6" r="2.4" fill="var(--accent)" data-floor="0.7" /><circle cx="359.2" cy="56.8" r="2.4" fill="var(--accent)" data-floor="0.65" /><circle cx="401.2" cy="91.1" r="2.4" fill="var(--accent)" data-floor="0.6" /><circle cx="443.3" cy="132.4" r="2.4" fill="var(--accent)" data-floor="0.55" /><circle cx="482.1" cy="167.0" r="2.4" fill="var(--accent)" data-floor="0.5" /><circle cx="498.3" cy="186.4" r="2.4" fill="var(--accent)" data-floor="0.45" /><circle cx="504.8" cy="190.1" r="2.4" fill="var(--accent)" data-floor="0.4" /><circle cx="508.0" cy="194.9" r="2.4" fill="var(--accent)" data-floor="0.0" /><circle cx="508.0" cy="194.9" r="2.4" fill="var(--accent)" data-floor="0.05" /><circle cx="508.0" cy="194.9" r="2.4" fill="var(--accent)" data-floor="0.1" /><circle cx="508.0" cy="194.9" r="2.4" fill="var(--accent)" data-floor="0.15" /><circle cx="508.0" cy="194.9" r="2.4" fill="var(--accent)" data-floor="0.2" /><circle cx="508.0" cy="194.9" r="2.4" fill="var(--accent)" data-floor="0.25" /><circle cx="508.0" cy="194.9" r="2.4" fill="var(--accent)" data-floor="0.3" /><circle cx="508.0" cy="194.9" r="2.4" fill="var(--accent)" data-floor="0.35" /><line id="floor-line" x1="42" y1="12" x2="42" y2="230" stroke="var(--ink)" stroke-width="1.4" /><line x1="42" y1="230" x2="508" y2="230" stroke="var(--border-strong)" stroke-width="1" /><text x="42.0" y="246" text-anchor="middle" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">0%</text><text x="158.5" y="246" text-anchor="middle" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">25%</text><text x="275.0" y="246" text-anchor="middle" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">50%</text><text x="391.5" y="246" text-anchor="middle" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">75%</text><text x="508.0" y="246" text-anchor="middle" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">100%</text><text x="42" y="257" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">coverage - share of documents answered</text></svg><div class="legend"><span><i class="swatch" style="background:var(--accent)"></i>accuracy on answered</span><span><i class="dashed"></i>random abstention at the same coverage</span></div><div class="readout"><div><div class="k">COVERAGE</div><div class="v" id="out-coverage">--</div></div><div><div class="k">ACCURACY</div><div class="v" id="out-accuracy">--</div></div><div><div class="k">ERRORS THROUGH</div><div class="v" id="out-errors">--</div></div><div><div class="k">ERRORS CAUGHT</div><div class="v" id="out-caught">--</div></div><div><div class="k">OVER RANDOM</div><div class="v" id="out-lift">--</div></div></div></section><script>window.__COVERAGE__ = {"curve": [{"threshold": 0.0, "answered": 144, "coverage": 1.0, "accuracy": 0.7917, "errors": 30, "errors_caught": 0, "baseline_accuracy": 0.7917}, {"threshold": 0.05, "answered": 144, "coverage": 1.0, "accuracy": 0.7917, "errors": 30, "errors_caught": 0, "baseline_accuracy": 0.7917}, {"threshold": 0.1, "answered": 144, "coverage": 1.0, "accuracy": 0.7917, "errors": 30, "errors_caught": 0, "baseline_accuracy": 0.7917}, {"threshold": 0.15, "answered": 144, "coverage": 1.0, "accuracy": 0.7917, "errors": 30, "errors_caught": 0, "baseline_accuracy": 0.7917}, {"threshold": 0.2, "answered": 144, "coverage": 1.0, "accuracy": 0.7917, "errors": 30, "errors_caught": 0, "baseline_accuracy": 0.7917}, {"threshold": 0.25, "answered": 144, "coverage": 1.0, "accuracy": 0.7917, "errors": 30, "errors_caught": 0, "baseline_accuracy": 0.7917}, {"threshold": 0.3, "answered": 144, "coverage": 1.0, "accuracy": 0.7917, "errors": 30, "errors_caught": 0, "baseline_accuracy": 0.7917}, {"threshold": 0.35, "answered": 144, "coverage": 1.0, "accuracy": 0.7917, "errors": 30, "errors_caught": 0, "baseline_accuracy": 0.7917}, {"threshold": 0.4, "answered": 143, "coverage": 0.9931, "accuracy": 0.7972, "errors": 29, "errors_caught": 1, "baseline_accuracy": 0.7917}, {"threshold": 0.45, "answered": 141, "coverage": 0.9792, "accuracy": 0.8014, "errors": 28, "errors_caught": 2, "baseline_accuracy": 0.7917}, {"threshold": 0.5, "answered": 136, "coverage": 0.9444, "accuracy": 0.8235, "errors": 24, "errors_caught": 6, "baseline_accuracy": 0.7917}, {"threshold": 0.55, "answered": 124, "coverage": 0.8611, "accuracy": 0.8629, "errors": 17, "errors_caught": 13, "baseline_accuracy": 0.7917}, {"threshold": 0.6, "answered": 111, "coverage": 0.7708, "accuracy": 0.9099, "errors": 10, "errors_caught": 20, "baseline_accuracy": 0.7917}, {"threshold": 0.65, "answered": 98, "coverage": 0.6806, "accuracy": 0.949, "errors": 5, "errors_caught": 25, "baseline_accuracy": 0.7917}, {"threshold": 0.7, "answered": 89, "coverage": 0.6181, "accuracy": 0.9663, "errors": 3, "errors_caught": 27, "baseline_accuracy": 0.7917}, {"threshold": 0.75, "answered": 83, "coverage": 0.5764, "accuracy": 0.9759, "errors": 2, "errors_caught": 28, "baseline_accuracy": 0.7917}, {"threshold": 0.8, "answered": 74, "coverage": 0.5139, "accuracy": 0.9865, "errors": 1, "errors_caught": 29, "baseline_accuracy": 0.7917}, {"threshold": 0.85, "answered": 68, "coverage": 0.4722, "accuracy": 1.0, "errors": 0, "errors_caught": 30, "baseline_accuracy": 0.7917}, {"threshold": 0.9, "answered": 63, "coverage": 0.4375, "accuracy": 1.0, "errors": 0, "errors_caught": 30, "baseline_accuracy": 0.7917}, {"threshold": 0.95, "answered": 55, "coverage": 0.3819, "accuracy": 1.0, "errors": 0, "errors_caught": 30, "baseline_accuracy": 0.7917}, {"threshold": 1.0, "answered": 0, "coverage": 0.0, "accuracy": null, "errors": 0, "errors_caught": 30, "baseline_accuracy": 0.7917}], "geometry": {"padL": 42, "plotW": 466, "padT": 12, "plotH": 218}};</script><div class="two"><section class="card"><div class="card-head"><h2>Reliability</h2><span class="hint">bars sized by document count</span></div><p class="prose">A calibrated model sits on the diagonal: its 0.8 bin is right 80% of the time. Bars above the dot are a model doing better than it claims.</p><svg viewBox="0 0 520 260" width="100%" role="img" aria-label="Reliability diagram"><line x1="42" y1="230.0" x2="508" y2="230.0" stroke="var(--rule)" stroke-width="1" /><text x="34" y="233.5" text-anchor="end" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">0.0</text><line x1="42" y1="186.4" x2="508" y2="186.4" stroke="var(--rule)" stroke-width="1" /><text x="34" y="189.9" text-anchor="end" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">0.2</text><line x1="42" y1="142.8" x2="508" y2="142.8" stroke="var(--rule)" stroke-width="1" /><text x="34" y="146.3" text-anchor="end" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">0.4</text><line x1="42" y1="99.2" x2="508" y2="99.2" stroke="var(--rule)" stroke-width="1" /><text x="34" y="102.7" text-anchor="end" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">0.6</text><line x1="42" y1="55.6" x2="508" y2="55.6" stroke="var(--rule)" stroke-width="1" /><text x="34" y="59.1" text-anchor="end" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">0.8</text><line x1="42" y1="12.0" x2="508" y2="12.0" stroke="var(--rule)" stroke-width="1" /><text x="34" y="15.5" text-anchor="end" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">1.0</text><line x1="42" y1="230" x2="508" y2="12" stroke="var(--ink-faint)" stroke-width="1.2" stroke-dasharray="4 3" /><rect x="198.3" y="230.0" width="13.7" height="1.0" rx="2" fill="var(--fail)" fill-opacity=".82" /><circle cx="205.1" cy="149.1" r="2.6" fill="var(--surface)" stroke="var(--ink)" stroke-width="1.4" /><text x="205.1" y="243.0" text-anchor="middle" font-size="8" fill="var(--ink-faint)" font-family="var(--mono)">1</text><rect x="243.0" y="167.7" width="17.4" height="62.3" rx="2" fill="var(--fail)" fill-opacity=".82" /><circle cx="251.7" cy="129.2" r="2.6" fill="var(--surface)" stroke="var(--ink)" stroke-width="1.4" /><text x="251.7" y="243.0" text-anchor="middle" font-size="8" fill="var(--ink-faint)" font-family="var(--mono)">7</text><rect x="284.1" y="134.1" width="28.4" height="95.9" rx="2" fill="var(--fail)" fill-opacity=".82" /><circle cx="298.3" cy="110.0" r="2.6" fill="var(--surface)" stroke="var(--ink)" stroke-width="1.4" /><text x="298.3" y="243.0" text-anchor="middle" font-size="8" fill="var(--ink-faint)" font-family="var(--mono)">25</text><rect x="331.6" y="81.4" width="26.6" height="148.6" rx="2" fill="var(--pass)" fill-opacity=".82" /><circle cx="344.9" cy="90.0" r="2.6" fill="var(--surface)" stroke="var(--ink)" stroke-width="1.4" /><text x="344.9" y="243.0" text-anchor="middle" font-size="8" fill="var(--ink-faint)" font-family="var(--mono)">22</text><rect x="380.4" y="41.1" width="22.3" height="188.9" rx="2" fill="var(--pass)" fill-opacity=".82" /><circle cx="391.5" cy="66.8" r="2.6" fill="var(--surface)" stroke="var(--ink)" stroke-width="1.4" /><text x="391.5" y="243.0" text-anchor="middle" font-size="8" fill="var(--ink-faint)" font-family="var(--mono)">15</text><rect x="428.2" y="31.8" width="19.8" height="198.2" rx="2" fill="var(--pass)" fill-opacity=".82" /><circle cx="438.1" cy="44.3" r="2.6" fill="var(--surface)" stroke="var(--ink)" stroke-width="1.4" /><text x="438.1" y="243.0" text-anchor="middle" font-size="8" fill="var(--ink-faint)" font-family="var(--mono)">11</text><rect x="465.6" y="12.0" width="38.2" height="218.0" rx="2" fill="var(--pass)" fill-opacity=".82" /><circle cx="484.7" cy="17.2" r="2.6" fill="var(--surface)" stroke="var(--ink)" stroke-width="1.4" /><text x="484.7" y="243.0" text-anchor="middle" font-size="8" fill="var(--ink-faint)" font-family="var(--mono)">63</text><line x1="42" y1="230" x2="508" y2="230" stroke="var(--border-strong)" stroke-width="1" /><text x="42" y="256" font-size="9" fill="var(--ink-faint)" font-family="var(--mono)">confidence 0.0 to 1.0, documents per bin below</text></svg><div class="legend"><span><i class="swatch" style="background:var(--pass)"></i>accuracy above stated confidence</span><span><i class="swatch" style="background:var(--fail)"></i>below &mdash; the direction that leaks errors</span></div></section><section class="card finding"><div class="card-head"><h2><span class="dot"></span>The holdout decides the number</h2><span class="hint">measured, not estimated</span></div><p class="prose">Holding out whole documents leaves the model free to recognise a page design it trained on. Holding out a whole design does not, and it is the split that predicts a vendor template nobody has seen. The same model, the same corpus, two splits:</p><div class="scroll"><table><thead><tr><th>split</th><th class="r">accuracy</th><th class="r">floor</th><th class="r">coverage</th></tr></thead><tbody><tr><td>held out by source document</td><td class="mono r">0.958</td><td class="mono r">0.75</td><td class="mono r">82.6%</td></tr><tr><td>held out by page design</td><td class="mono r">0.792</td><td class="mono r">0.85</td><td class="mono r">47.2%</td></tr></tbody></table></div><p class="prose" style="margin-top:12px">The manifest carried <code>0.90</code>. On the honest split <code>0.85</code> answers more documents with the same zero errors, so five points of coverage were being given away for nothing.</p></section></div><section class="card"><div class="card-head"><h2>By degradation</h2><span class="hint">one floor over all four costs the clean ones</span></div><p class="prose">The floors diverge. A single global floor is set by the worst profile and charges every other profile for it, which is the argument for routing on the degradation the normalizer already reports.</p><div class="scroll"><table><thead><tr><th>profile</th><th class="r">n</th><th>accuracy</th><th class="r">confidence</th><th class="r">ECE</th><th class="r">floor</th><th class="r">coverage</th></tr></thead><tbody><tr><td class="mono">clean</td><td class="mono r">36</td><td><span class="meter"><i style="width:78%;background:var(--warn)"></i></span><span class="mono">0.778</span></td><td class="mono r">0.795</td><td class="mono r">0.112</td><td class="mono r">0.65</td><td class="mono r">66.7%</td></tr><tr><td class="mono">fax</td><td class="mono r">36</td><td><span class="meter"><i style="width:69%;background:var(--fail)"></i></span><span class="mono">0.694</span></td><td class="mono r">0.743</td><td class="mono r">0.128</td><td class="mono r">0.85</td><td class="mono r">38.9%</td></tr><tr><td class="mono">light</td><td class="mono r">36</td><td><span class="meter"><i style="width:81%;background:var(--warn)"></i></span><span class="mono">0.806</span></td><td class="mono r">0.818</td><td class="mono r">0.046</td><td class="mono r">0.75</td><td class="mono r">61.1%</td></tr><tr><td class="mono">photo</td><td class="mono r">36</td><td><span class="meter"><i style="width:89%;background:var(--pass)"></i></span><span class="mono">0.889</span></td><td class="mono r">0.800</td><td class="mono r">0.124</td><td class="mono r">0.70</td><td class="mono r">66.7%</td></tr></tbody></table></div></section><section class="card"><div class="card-head"><h2>Field accuracy</h2><span class="hint">weakest 18 of 105 &middot; 1,974 graded</span></div><p class="prose">Sorted worst first, because the mean hides exactly the fields worth acting on. "Invented" is a value the model supplied where the document had none &mdash; the more expensive error, because a blank gets looked at and a confident wrong answer does not.</p><div class="scroll"><table><thead><tr><th>field</th><th>type</th><th class="r">n</th><th>accuracy</th><th class="r">exact</th><th>note</th><th class="r">action</th></tr></thead><tbody><tr><td class="mono">signature</td><td class="mono" style="color:var(--ink-faint)">forms</td><td class="mono r">35</td><td><span class="meter"><i style="width:0%;background:var(--fail)"></i></span><span class="mono">0.000</span></td><td class="mono r">0.000</td><td class="mono" style="color:var(--ink-faint)">35 missing</td><td class="r"><span class="pill pill-fail">Retrain</span></td></tr><tr><td class="mono">sign_date</td><td class="mono" style="color:var(--ink-faint)">forms</td><td class="mono r">35</td><td><span class="meter"><i style="width:0%;background:var(--fail)"></i></span><span class="mono">0.000</span></td><td class="mono r">0.000</td><td class="mono" style="color:var(--ink-faint)">35 missing</td><td class="r"><span class="pill pill-fail">Retrain</span></td></tr><tr><td class="mono">target_role</td><td class="mono" style="color:var(--ink-faint)">resumes</td><td class="mono r">35</td><td><span class="meter"><i style="width:11%;background:var(--fail)"></i></span><span class="mono">0.114</span></td><td class="mono r">0.114</td><td class="mono" style="color:var(--ink-faint)">15 missing</td><td class="r"><span class="pill pill-fail">Retrain</span></td></tr><tr><td class="mono">multiple_jobs</td><td class="mono" style="color:var(--ink-faint)">forms</td><td class="mono r">7</td><td><span class="meter"><i style="width:43%;background:var(--fail)"></i></span><span class="mono">0.429</span></td><td class="mono r">0.429</td><td class="mono" style="color:var(--ink-faint)">4 missing</td><td class="r"><span class="pill pill-fail">Retrain</span></td></tr><tr><td class="mono">years_experience</td><td class="mono" style="color:var(--ink-faint)">resumes</td><td class="mono r">35</td><td><span class="meter"><i style="width:63%;background:var(--fail)"></i></span><span class="mono">0.629</span></td><td class="mono r">0.629</td><td class="mono" style="color:var(--ink-faint)">13 missing</td><td class="r"><span class="pill pill-fail">Retrain</span></td></tr><tr><td class="mono">status</td><td class="mono" style="color:var(--ink-faint)">forms</td><td class="mono r">7</td><td><span class="meter"><i style="width:71%;background:var(--fail)"></i></span><span class="mono">0.714</span></td><td class="mono r">0.714</td><td class="mono" style="color:var(--ink-faint)"></td><td class="r"><span class="pill pill-fail">Retrain</span></td></tr><tr><td class="mono">bill_to</td><td class="mono" style="color:var(--ink-faint)">invoices</td><td class="mono r">35</td><td><span class="meter"><i style="width:80%;background:var(--fail)"></i></span><span class="mono">0.800</span></td><td class="mono r">0.800</td><td class="mono" style="color:var(--ink-faint)"></td><td class="r"><span class="pill pill-fail">Retrain</span></td></tr><tr><td class="mono">buyer</td><td class="mono" style="color:var(--ink-faint)">purchase_orders</td><td class="mono r">35</td><td><span class="meter"><i style="width:83%;background:var(--fail)"></i></span><span class="mono">0.829</span></td><td class="mono r">0.829</td><td class="mono" style="color:var(--ink-faint)"></td><td class="r"><span class="pill pill-fail">Retrain</span></td></tr><tr><td class="mono">business_name</td><td class="mono" style="color:var(--ink-faint)">forms</td><td class="mono r">7</td><td><span class="meter"><i style="width:86%;background:var(--warn)"></i></span><span class="mono">0.857</span></td><td class="mono r">0.857</td><td class="mono" style="color:var(--ink-faint)">1 missing</td><td class="r"><span class="pill pill-warn">Watch</span></td></tr><tr><td class="mono">tax_classification</td><td class="mono" style="color:var(--ink-faint)">forms</td><td class="mono r">7</td><td><span class="meter"><i style="width:86%;background:var(--warn)"></i></span><span class="mono">0.857</span></td><td class="mono r">0.857</td><td class="mono" style="color:var(--ink-faint)"></td><td class="r"><span class="pill pill-warn">Watch</span></td></tr><tr><td class="mono">address</td><td class="mono" style="color:var(--ink-faint)">forms</td><td class="mono r">21</td><td><span class="meter"><i style="width:90%;background:var(--warn)"></i></span><span class="mono">0.905</span></td><td class="mono r">0.905</td><td class="mono" style="color:var(--ink-faint)"></td><td class="r"><span class="pill pill-warn">Watch</span></td></tr><tr><td class="mono">subtotal</td><td class="mono" style="color:var(--ink-faint)">multi_bill_invoices</td><td class="mono r">35</td><td><span class="meter"><i style="width:91%;background:var(--warn)"></i></span><span class="mono">0.914</span></td><td class="mono r">0.914</td><td class="mono" style="color:var(--ink-faint)"></td><td class="r"><span class="pill pill-warn">Watch</span></td></tr><tr><td class="mono">tax</td><td class="mono" style="color:var(--ink-faint)">multi_bill_invoices</td><td class="mono r">35</td><td><span class="meter"><i style="width:91%;background:var(--warn)"></i></span><span class="mono">0.914</span></td><td class="mono r">0.914</td><td class="mono" style="color:var(--ink-faint)"></td><td class="r"><span class="pill pill-warn">Watch</span></td></tr><tr><td class="mono">total</td><td class="mono" style="color:var(--ink-faint)">multi_bill_invoices</td><td class="mono r">35</td><td><span class="meter"><i style="width:91%;background:var(--warn)"></i></span><span class="mono">0.914</span></td><td class="mono r">0.914</td><td class="mono" style="color:var(--ink-faint)"></td><td class="r"><span class="pill pill-warn">Watch</span></td></tr><tr><td class="mono">vendor</td><td class="mono" style="color:var(--ink-faint)">purchase_orders</td><td class="mono r">35</td><td><span class="meter"><i style="width:91%;background:var(--warn)"></i></span><span class="mono">0.914</span></td><td class="mono r">0.914</td><td class="mono" style="color:var(--ink-faint)"></td><td class="r"><span class="pill pill-warn">Watch</span></td></tr><tr><td class="mono">vendor_name</td><td class="mono" style="color:var(--ink-faint)">invoices</td><td class="mono r">35</td><td><span class="meter"><i style="width:97%;background:var(--pass)"></i></span><span class="mono">0.971</span></td><td class="mono r">0.971</td><td class="mono" style="color:var(--ink-faint)"></td><td class="r"><span class="pill pill-pass">Healthy</span></td></tr><tr><td class="mono">invoice_date</td><td class="mono" style="color:var(--ink-faint)">multi_bill_invoices</td><td class="mono r">35</td><td><span class="meter"><i style="width:97%;background:var(--pass)"></i></span><span class="mono">0.971</span></td><td class="mono r">0.000</td><td class="mono" style="color:var(--ink-faint)"></td><td class="r"><span class="pill pill-pass">Healthy</span></td></tr><tr><td class="mono">currency</td><td class="mono" style="color:var(--ink-faint)">purchase_orders</td><td class="mono r">35</td><td><span class="meter"><i style="width:97%;background:var(--pass)"></i></span><span class="mono">0.971</span></td><td class="mono r">0.971</td><td class="mono" style="color:var(--ink-faint)">1 missing</td><td class="r"><span class="pill pill-pass">Healthy</span></td></tr></tbody></table></div></section><section class="card"><div class="card-head"><h2>What produced these numbers</h2></div><div class="foot">extractor   qwen/qwen3-vl-8b<br>documents   175   failed 0<br>type from   classifier<br>latency     4.1 h over 175 calls<br>predictions reports/v1-predicted-type.jsonl</div><p class="prose" style="margin-top:12px">Every figure on this page is read from a report file in <code>reports/</code>. Nothing is stored in this page except what those files say, and a panel with no report behind it says so rather than showing a placeholder.</p></section>
+    </div>
+  </main>
+</div>
+<script>
+(function () {
+  var data = window.__COVERAGE__;
+  if (!data) return;
+  var slider = document.getElementById('floor');
+  var value = document.getElementById('floor-value');
+  var line = document.getElementById('floor-line');
+  var geo = data.geometry;
+  var out = {
+    coverage: document.getElementById('out-coverage'),
+    accuracy: document.getElementById('out-accuracy'),
+    errors: document.getElementById('out-errors'),
+    caught: document.getElementById('out-caught'),
+    lift: document.getElementById('out-lift')
+  };
+
+  function nearest(floor) {
+    var best = data.curve[0], gap = Infinity;
+    for (var i = 0; i < data.curve.length; i++) {
+      var d = Math.abs(data.curve[i].threshold - floor);
+      if (d < gap) { gap = d; best = data.curve[i]; }
+    }
+    return best;
+  }
+
+  function paint() {
+    var floor = Number(slider.value) / 100;
+    var row = nearest(floor);
+    value.textContent = row.threshold.toFixed(2);
+    out.coverage.textContent = row.coverage === null
+      ? '--' : (row.coverage * 100).toFixed(1) + '%';
+    out.accuracy.textContent = row.accuracy === null
+      ? '--' : (row.accuracy * 100).toFixed(1) + '%';
+    out.errors.textContent = row.errors;
+    out.caught.textContent = row.errors_caught;
+    // The number the whole panel exists for: what sorting by confidence bought over
+    // declining the same count at random. Zero here means the floor is pure lost
+    // coverage, and that has to be as legible as a good result.
+    var lift = (row.accuracy === null || row.baseline_accuracy === null)
+      ? null : row.accuracy - row.baseline_accuracy;
+    out.lift.textContent = lift === null
+      ? '--' : (lift >= 0 ? '+' : '') + (lift * 100).toFixed(1) + ' pts';
+    out.lift.style.color = lift === null ? 'var(--ink-faint)'
+      : (lift > 0.001 ? 'var(--pass)' : 'var(--ink-muted)');
+    if (line && row.coverage !== null) {
+      var x = geo.padL + row.coverage * geo.plotW;
+      line.setAttribute('x1', x); line.setAttribute('x2', x);
+    }
+  }
+
+  slider.addEventListener('input', paint);
+  paint();
+})();
+</script>
+</body>
+</html>

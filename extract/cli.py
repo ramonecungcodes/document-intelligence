@@ -153,10 +153,17 @@ def predict_types(jobs, corpus_root, config, plugin, concurrency,
                                      document=document, path=path)
         return job, result
 
+    # Every classification is kept, not only the ones that decided something. A
+    # document the classifier answered confidently and a document it barely answered
+    # are indistinguishable in the predictions, and the difference is exactly what
+    # Phase 5 needs. Recovering it later costs a GPU and a re-run.
+    from route import signals as signals_mod
+    seen = {}
     predicted, abstained, wrong = [], [], []
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         for done, (job, result) in enumerate(pool.map(one, jobs), 1):
             true_type, rel, true_variant = job
+            seen[rel] = result
             if result.abstained:
                 abstained.append((rel, result.confidence))
                 continue
@@ -188,7 +195,7 @@ def predict_types(jobs, corpus_root, config, plugin, concurrency,
         print(f"    {truth:26} read as {guess:26} {rel}")
     if len(wrong) > 10:
         print(f"    ... {len(wrong)} total")
-    return predicted, abstained
+    return predicted, abstained, seen
 
 
 def _validate_output(out_path: str, corpus_root: str, config_path: str) -> None:
@@ -290,11 +297,12 @@ def run(args):
     if not jobs:
         raise SystemExit("nothing to extract")
 
-    abstained = []
+    abstained, classifications = [], {}
     if args.type_from == "classifier":
         config = config_mod.load(args.config)
-        jobs, abstained = predict_types(jobs, corpus_root, config, args.classifier,
-                                        args.concurrency, args.normalizer)
+        jobs, abstained, classifications = predict_types(
+            jobs, corpus_root, config, args.classifier, args.concurrency,
+            args.normalizer)
         if not jobs:
             raise SystemExit("the classifier declined every document")
 
@@ -431,6 +439,47 @@ def run(args):
             pass
 
     stream.close()
+
+    # Written beside the predictions, not into them. The signals file exists so a
+    # later stage can ask how sure each decision was; folding it into the extractor's
+    # answer would make the two impossible to diff apart and hand the scorer a file
+    # that two stages had written.
+    from route import signals as signals_mod
+    writer = signals_mod.Writer(out_path)
+    for result in results:
+        record = result.record or {}
+        rel = str(record.get("file", "")).replace("\\", "/")
+        if not rel:
+            continue
+        writer.record(
+            rel,
+            # Nulls stripped: a provenance dict carries every key whether or not the
+            # engine filled it, and a signals file full of nulls invites a calibrator
+            # to treat "the native reader has no confidence" as "confidence zero".
+            normalizer={k: v for k, v in (record.get("_normalizer") or {}).items()
+                        if v is not None},
+            classifier=signals_mod.from_classification(classifications.get(rel)),
+            # Whether the extractor struggled is a signal in itself, and it is gone the
+            # moment the run ends: a truncated answer and a complete one look identical
+            # in the predictions once the JSON parses.
+            extraction={k: v for k, v in (
+                ("error", result.error or None),
+                ("skipped", result.skipped or None),
+                # How much deterministic cleanup a document needed is a proxy for how
+                # ragged the model's answer was, and it is not visible in the cleaned
+                # record -- that is the point of cleaning it.
+                ("rules_applied", dict(result.rules.applied) if getattr(
+                    result.rules, "applied", None) else None),
+            ) if v})
+    for rel, confidence in abstained:
+        # A declined document has no prediction, so this is the only place its
+        # confidence survives. Leaving it out would calibrate on the easy half.
+        writer.record(str(rel).replace("\\", "/"),
+                      classifier=signals_mod.from_classification(
+                          classifications.get(rel)) or {"abstained": True,
+                                                        "confidence": confidence})
+    if len(writer):
+        print(f"      {writer.write()}   ({len(writer)} documents)")
 
     if getattr(args, "validate", False):
         _validate_output(out_path, corpus_root, args.config)

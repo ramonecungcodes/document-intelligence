@@ -116,11 +116,16 @@ class Layout:
         # the field set, and returning only the type would leave that to the corpus.
         doc_type, variant = split_label(best)
 
+        withheld = ""
         if self.abstain_below and confidence < self.abstain_below:
-            doc_type, variant = "", ""
+            # Kept, not dropped: see the note in the DiT plugin. A declined document
+            # whose suppressed answer was right and one whose answer was wrong are the
+            # difference between a floor set too high and a floor doing its job.
+            withheld, doc_type, variant = best, "", ""
         return Classification(
-            doc_type=doc_type, variant=variant,
+            doc_type=doc_type, variant=variant, withheld=withheld,
             confidence=round(confidence, 4),
+            margin=round(confidence - probability[order[1]].item(), 4),
             runner_up=split_label(labels[order[1].item()])[0],
             evidence=f"{len(words)} words with boxes on page one",
             engine=f"layout:{os.path.basename(self.model_dir)}",

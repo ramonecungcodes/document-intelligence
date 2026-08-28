@@ -10,7 +10,8 @@ import os
 import pytest
 
 from core.doctypes import MULTI_BILL_INVOICE
-from eval.score import match_rows, score
+from eval.score import (load_corpus as scoring_load_corpus,
+                        load_records as scoring_load, match_rows, score)
 
 SAMPLES = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -378,3 +379,49 @@ class TestFieldNoteRendering:
         rendered = "\n".join(out)
         assert "service_location" in rendered
         assert "46 invented" in rendered
+
+
+class TestPerDocumentMatchesTheAggregate:
+    """The per-document scorer must reconstruct the aggregate exactly.
+
+    Two paths through the same grading is how two plausible-looking accuracies come to
+    disagree, and neither would look wrong. This pins them together: the field-weighted
+    mean of the per-document scores has to equal the aggregate field accuracy to the
+    digit, because it is the same sum computed in a different order.
+    """
+
+    def test_the_field_weighted_mean_reconstructs_the_total(self):
+        from eval.score import per_document
+
+        corpus = os.environ.get("DI_DATASET_ROOT", "data")
+        if not os.path.isdir(os.path.join(corpus, "labels")):
+            pytest.skip("no corpus built")
+        predictions = os.path.join("reports", "v1-predicted-type.jsonl")
+        if not os.path.exists(predictions):
+            pytest.skip("no predictions to score")
+
+        records = scoring_load(predictions)
+        rows = per_document(corpus, records)
+        graded = sum(r["fields_graded"] for r in rows.values())
+        matched = sum((r["field_accuracy"] or 0) * r["fields_graded"]
+                      for r in rows.values())
+        overall = score(corpus, records).overall()
+        assert graded == overall["fields_graded"]
+        assert round(matched / graded, 4) == pytest.approx(
+            overall["field_accuracy"], abs=1e-4)
+
+    def test_a_crash_is_not_a_zero(self):
+        """A failed extraction reports `failed` and no accuracy. Scoring it zero would
+        let an outage read as a model regression."""
+        from eval.score import per_document
+
+        corpus = os.environ.get("DI_DATASET_ROOT", "data")
+        if not os.path.isdir(os.path.join(corpus, "labels")):
+            pytest.skip("no corpus built")
+        # A stem with a registered document type. `bundles` has none -- it holds
+        # multi-document files for the splitter -- and per_document skips it, so
+        # taking whatever sorts first would test nothing.
+        first = scoring_load_corpus(corpus, ["invoices"])["invoices"][0]["file"]
+        rows = per_document(corpus, [{"file": first, "_error": "timeout"}])
+        assert rows[first]["failed"] is True
+        assert rows[first]["field_accuracy"] is None

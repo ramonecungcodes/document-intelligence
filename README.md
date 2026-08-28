@@ -69,7 +69,7 @@ finishing it is knowing whether to continue.
 | **2** | Can it read documents that are not clean? The normalizer becomes its own stage: degraded scans carry no text layer, so this is where OCR or a vision path has to earn its place. | degraded accuracy against clean | done |
 | **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | done |
 | **4** | Can it tell when it is wrong? Validators: arithmetic that must foot, dates that must parse, cross-field constraints that must hold. | defect precision and recall | done |
-| **5** | Is its confidence real? Calibration from independent signals rather than model self-report, and routing what fails to a person. | a calibration curve | |
+| **5** | Is its confidence real? Calibration from independent signals rather than model self-report, and routing what fails to a person. | a calibration curve | done |
 | **6** | Can it repair itself? The bounded repair loop and tool-using extraction — the agentic pockets, arriving last because everything before them is what makes them measurable. | repair success rate | |
 | **7** | Does teaching it work? Teach mode and the run queue as one screen, with the knowledge pack accumulating corrections, layout profiles and learned validators. | a learning curve | |
 
@@ -468,13 +468,21 @@ prompts, one thing varying — where the document type came from:
 
 | type from | field accuracy | exact match |
 |---|---|---|
-| the corpus | `0.959` | `0.809` |
-| **the pipeline** | **`0.957`** | **`0.809`** |
+| the corpus | `0.924` | `0.780` |
+| **the pipeline** | **`0.923`** | **`0.781`** |
 
-Two thousandths across 1,904 graded fields, and exact match identical. The classifier
-placed all 175 correctly — type *and* variant — so the extractor received the same
-schema either way, and what is left is run-to-run model variance rather than
+One thousandth across 1,974 graded fields, and exact match a thousandth the other way.
+The classifier placed all 175 correctly — type *and* variant — so the extractor received
+the same schema either way, and what is left is run-to-run model variance rather than
 classification error.
+
+An earlier version of this table read `0.959` and `0.957` over 1,904 fields. Those were
+the same two runs scored against the corpus as it stood *before* the rebuild to ten page
+designs per type, and the report file holding them was never regenerated afterwards —
+so a stale artifact was quietly overstating the pipeline by three and a half points.
+Rescored against the corpus that exists, the level drops and the comparison the section
+is about does not move: removing the answer key still costs a thousandth. Fixed when
+Phase 5 went looking for a per-document score and found the totals disagreed.
 
 So removing the corpus's answer key costs essentially nothing on clean documents, which
 is the claim Phase 3 was built to test. Every extraction number before this one,
@@ -616,6 +624,168 @@ deserve it.
 
 **Nothing routes on a finding.** `Report.ok` exists and no stage consumes it. Confidence
 and routing are Phase 5, and smearing them into Phase 4 would make both unmeasurable.
+
+## Phase 5: is the confidence real
+
+The phase asks one question — when the pipeline is wrong, did it know? — and the answer
+turned out to be no for the signal everybody reaches for first.
+
+### The curve, and the baseline that makes it mean anything
+
+A coverage curve drawn alone always looks like an achievement. Raise a confidence floor,
+watch accuracy climb on what remains, and conclude the confidence is working. It climbs
+whether or not the confidence carries information, because you are also throwing
+documents away.
+
+So every curve here is drawn against **random abstention**: decline the same *number* of
+documents, chosen at random. That baseline needs no sampling — the expected accuracy of
+a uniformly random subset is the accuracy of the whole — so it is a flat line at the
+corpus mean, and the vertical distance to it is the entire value of sorting by
+confidence. Where the curve sits on the line, the floor is buying nothing.
+
+### Two floors that were not doing their job
+
+Building the measurement found both.
+
+The manifest carried `[classifiers.dit] abstain_below = 0.9`, and under a cascade it did
+nothing at all. The cascade builds its members with abstention disabled on purpose — a
+primary that declines internally hands back no answer and no runner-up, leaving the
+escalation nothing to arbitrate — so the floor had to be declared on the cascade or not
+at all. And the cascade applied its own floor on only one of its two exits, the
+escalation path, so it governed the minority of documents the primary was already unsure
+about. Exactly the wrong half. Nothing anywhere reported a floor that was not being
+applied.
+
+Second, abstaining blanked the predicted type and dropped the answer with it. A declined
+document recorded no answer, which makes *is this floor set right?* unanswerable from the
+artifacts — the coverage curve could only ever be drawn above whatever floor was already
+in force. Classifications now carry `withheld`, the answer that was suppressed.
+
+### Where the floor belongs
+
+Measured on the cascade that actually runs, over documents held out **by page design** —
+the split that does not let a model recognise a layout it trained on:
+
+| floor | coverage | accuracy | errors through |
+|---|---|---|---|
+| `0.60` | `0.771` | `0.946` | 6 |
+| `0.70` | `0.618` | `0.978` | 2 |
+| **`0.85`** | **`0.472`** | **`1.000`** | **0** |
+| `0.90` | `0.438` | `1.000` | 0 |
+
+`0.85`, not `0.90`: they answer with the same zero errors and `0.85` answers five points
+more of the corpus. The honest reading of `0.472` is that on page designs it has never
+seen, this classifier can be trusted unsupervised on slightly under half the corpus.
+
+The same run answered a question nobody had asked. Against its own primary at matched
+coverage, the cascade's text arbiter gains `+0.081` at a `0.50` floor, `+0.036` at
+`0.60`, and **nothing at all from `0.75` upward**. Every document it rescues sits below
+`0.75`. At the floor now set, the cascade and bare DiT are the same pipeline and the OCR
+is spent for nothing — so `0.944` is not an argument for the escalation at every
+operating point, only at low ones.
+
+### The confidence is real, and it is about the wrong thing
+
+The classifier is well calibrated for classification: ECE `0.063` on the design holdout.
+Then the same confidence was scored against whether the *extraction* came back right —
+which is what a floor actually decides, since a floor sends a document to a person and a
+person cares about the fields.
+
+It is worse than uninformative. Pooled over 175 documents, raising the floor makes the
+accepted half **worse**: `0.917` at no floor, `0.888` at `0.95`, every row at or below
+the random baseline.
+
+Split by type, it is a confound rather than a broken model:
+
+| type | mean confidence | field accuracy |
+|---|---|---|
+| resumes | `0.997` | `0.820` |
+| multi-bill invoices | `0.994` | `0.976` |
+| forms | `0.993` | `0.840` |
+| purchase orders | `0.874` | `0.971` |
+| invoices | `0.872` | `0.979` |
+
+DiT's confidence measures how visually distinctive a page is. Extraction difficulty is
+driven by field count and free text. On this corpus those run opposite, so the pooled
+curve averages across the variable driving both columns. The scorer now reports a
+per-type breakdown and says so in words when the ordering inverts — a tool that reported
+only the pooled number would hand you *the model is broken* when the answer is *you are
+looking at two populations*.
+
+### What does predict a bad extraction
+
+Signals that are observations about the document rather than the model's opinion of its
+own work. On 1,055 degraded documents across all four profiles, routing the least
+promising 20% to a person, measured against the same random baseline:
+
+| signal | rank correlation | lift |
+|---|---|---|
+| **share of fields returned blank** | `-0.786` | **`+0.120`** |
+| words per page | `0.512` | `+0.107` |
+| mean OCR word confidence | `0.697` | `+0.105` |
+| validator errors | `-0.494` | `+0.087` |
+| *classifier confidence* | `0.240` | `+0.028` |
+| validator warnings | `-0.014` | `+0.001` |
+| OCR engine disagreement | `0.044` | `-0.018` |
+
+The classifier's own confidence is in that table deliberately, scored on the same
+documents by the same method at the same fixed coverage — measured on separate corpora
+it would be an anecdote. **The best observable signal is worth four times the model's
+self-report**, and it is the best signal inside every document type as well as pooled,
+which is the test the classifier's confidence failed.
+
+Three results worth keeping:
+
+**Phase 4's severity split paid for itself here.** Validator *errors* carry real signal
+and *warnings* carry none. Summing them — the obvious thing to do — would have diluted
+one into the other.
+
+**Engine disagreement was expected to help and does not.** Two OCR engines differing
+about how much text is on a page turns out not to predict whether the fields came back
+right. Directions are declared before looking, so this is recorded as a contradicted
+expectation rather than quietly re-read; given ten signals one will point the right way
+by chance, and letting the data choose each sign is how noise becomes a finding.
+
+**Routing helps least where it is needed most.** On fax the baseline is `0.253` and the
+best signal reaches `0.333`; on light it is `0.894` with no room to move. Signals sort
+documents within a difficulty band. They do not rescue one.
+
+### Routing
+
+`router` is a plugin slot between validator and sink. Independent gates, not one blended
+score — a wrong type is not a bad field, because the type chose the schema, and one
+number would let a confident classification vouch for a hopeless extraction.
+
+Gates rather than a fitted model for three reasons. A model would need its own
+train/test split; it would relearn the document-type confound that already produced one
+wrong conclusion here; and a queue entry has to say *why*. It says
+`blank_share 0.75 above 0.2; validator_errors 2 above 0`, which a reviewer can check and
+disagree with.
+
+On the 1,055 degraded documents: accepts `0.337` of them at `0.846` mean field accuracy
+against a `0.552` corpus baseline — a lift of `+0.293`. All three gates fire as the sole
+reason for a decision (131, 125 and 52 times), so none is carried by its neighbours.
+
+And the measurement that argues against part of its own configuration: on the clean run
+the classifier gate fires 23 times, **every time as the only gate**, on documents that
+extracted at a mean of `0.992`. On designs the model has seen, that gate is almost pure
+cost. It is kept at `0.85` because the deployment assumption is vendor templates nobody
+trained on — the case the number was measured for — and the cost is written next to the
+setting rather than tuned away.
+
+### What this phase did not close
+
+**No signal was fitted, only measured.** Each gate is a threshold on one signal. A model
+combining them would score better on this corpus, and the reason not to ship one is
+above; the reason to revisit it is that `blank_share`, `words_per_page` and
+`ocr_confidence` are substantially reading the same underlying fact from different ends.
+
+**The extraction curve is clean-corpus only.** Confidence against extraction was scored
+on 175 clean documents, because that is the run whose signals could be reconstructed.
+The equivalent on degraded documents needs a re-run.
+
+**Nothing consumes the queue.** `route.cli apply` writes it; no interface reads it, and
+no correction flows back. That is Phase 7.
 
 ## Why the corpus comes first
 

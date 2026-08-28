@@ -3,6 +3,14 @@
 
     score      grade predictions and print a table (and write report.json)
     selftest   score the ground truth against itself; must come out at 1.000
+    calibrate  ask whether the confidence is real, and where the floor belongs
+    signals    which observable signals predict a bad extraction, and what they buy
+
+`calibrate --against extraction` is the one worth quoting: it asks whether confidence
+predicts the fields coming back right, which is what a floor is really deciding.
+`--against classification` asks only whether the type was named correctly, and a
+pipeline can be excellent at that while the documents it types confidently still
+extract badly.
 
 Usage:
     python -m eval.cli score --predictions preds.jsonl
@@ -18,9 +26,12 @@ deflated by a bug nobody would go looking for.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
+from core import config as config_mod
+from eval import calibration
 from eval import score as scoring
 from eval.report import ScoreReport
 
@@ -214,6 +225,228 @@ def build_predictions(arg: str, corpus_root: str, only):
     return scoring.load_records(arg)
 
 
+def _profile_of(relative_path: str) -> str:
+    """Which degradation this document is, read off the path.
+
+    Derived rather than stored, on purpose. The corpus names degraded documents
+    `<stem>__<profile>.pdf` and puts them under `degraded/`, so the filename already
+    carries this; writing it into the signals file as well would be a second copy of
+    one fact, and the docTR cache is the standing lesson on where that ends.
+    """
+    stem = os.path.basename(relative_path)
+    if stem.endswith(".pdf"):
+        stem = stem[:-4]
+    _, sep, profile = stem.partition("__")
+    return profile if sep else "clean"
+
+
+def _truth_labels(corpus_root: str, only=None) -> dict:
+    """file -> `type:variant`, the label a classifier is graded against.
+
+    Type and variant together, because the variant is what selects the field set. A
+    curve drawn on the type alone would count a W-9 read as an onboarding form a
+    correct answer, and then report the high confidence on it as well calibrated.
+    """
+    from core import doctypes
+
+    labels = {}
+    for stem, records in scoring.load_corpus(corpus_root, only).items():
+        doctype = doctypes.for_label_file(stem)
+        for record in records:
+            key = str(record.get("file", "")).replace("\\", "/")
+            if not key:
+                continue
+            base = record.get("doc_type") or (doctype.name if doctype else "")
+            variant = doctype.variant_of(record) if doctype else ""
+            labels[key] = f"{base}:{variant}" if variant else base
+    return labels
+
+
+def extraction_observations(args, score):
+    """Confidence against how well the document actually extracted.
+
+    This is the join Phase 5 exists for. Whether the classifier named the right type is
+    not what a floor decides -- a floor decides whether a person has to look at the
+    document, and that turns on whether its *fields* came back right. The two questions
+    can disagree in both directions: a correctly typed fax whose text is unreadable
+    extracts badly, and a misfiled purchase order can still yield most of its fields
+    because an invoice schema and a PO schema overlap heavily.
+
+    The outcome is the document's field accuracy, not a pass/fail. Choosing a bar here
+    would put a number nobody could see in front of every figure downstream.
+
+    A failed extraction is dropped rather than scored zero, and that is deliberate: a
+    crash and an extractor that ran and got everything wrong are different events, and
+    calling one the other would let an outage read as a model regression. They are
+    counted and reported instead.
+    """
+    from route import signals as signals_mod
+
+    rows = signals_mod.read(args.signals)
+    if not rows:
+        raise SystemExit(
+            f"no signals beside {args.signals}.\n"
+            f"  Expected {signals_mod.path_for(args.signals)}, which "
+            f"`extract.cli run --type-from classifier` writes.")
+    if not os.path.exists(args.signals):
+        raise SystemExit(f"predictions file not found: {args.signals}")
+    only = [t.strip() for t in args.only.split(",") if t.strip()] or None
+    graded = scoring.per_document(args.corpus, scoring.load_records(args.signals), only)
+
+    failed = ungraded = 0
+    for key, row in sorted(rows.items()):
+        outcome = graded.get(key)
+        if outcome is None:
+            ungraded += 1
+            continue
+        if outcome["failed"] or outcome["field_accuracy"] is None:
+            failed += 1
+            continue
+        classifier = row.get("classifier") or {}
+        answer = classifier.get("withheld") or classifier.get("doc_type") or ""
+        score.add(classifier.get("confidence"), outcome["field_accuracy"],
+                  _profile_of(key), truth=outcome["doc_type"], answer=answer)
+    if failed:
+        print(f"  {failed} extractions failed and are not scored; a crash is not a "
+              f"wrong answer", file=sys.stderr)
+    if ungraded:
+        print(f"  {ungraded} documents in the signals file have no graded extraction; "
+              f"skipped", file=sys.stderr)
+    return score
+
+
+def signal_rows(args) -> list:
+    """Join predictions to labels and turn each document into signals plus an outcome.
+
+    The signals come from the prediction record's own provenance and from re-running
+    the validators, so this needs no sidecar and works on every run ever made here --
+    which matters, because the runs with the richest signals are the degraded ones and
+    they all predate the sidecar. That it works on them is the design holding up: the
+    recoverable facts were deliberately not stored, and they are recoverable.
+    """
+    from core import doctypes
+    from route import features
+    from validate.base import build_all
+
+    if not os.path.exists(args.predictions):
+        raise SystemExit(f"predictions file not found: {args.predictions}")
+    records = scoring.load_records(args.predictions)
+    only = [t.strip() for t in args.only.split(",") if t.strip()] or None
+    graded = scoring.per_document(args.corpus, records, only)
+
+    config = config_mod.load(args.config)
+    validators = build_all(config) if not args.no_validators else None
+
+    from route import signals as signals_mod
+    sidecar = signals_mod.read(args.predictions)
+    if not sidecar:
+        print("  no signals sidecar beside this run; the classifier's own confidence "
+              "will show as unavailable", file=sys.stderr)
+
+    truth_of = {}
+    for stem, rows in scoring.load_corpus(args.corpus, only).items():
+        spec = doctypes.for_label_file(stem)
+        for record in rows:
+            key = str(record.get("file", "")).replace("\\", "/")
+            if key:
+                truth_of[key] = (stem, spec, spec.variant_of(record) if spec else "")
+
+    out, failed, unlabelled = [], 0, 0
+    for record in records:
+        key = str(record.get("file", "")).replace("\\", "/")
+        outcome = graded.get(key)
+        if key not in truth_of:
+            unlabelled += 1
+            continue
+        if outcome is None or outcome["failed"] or outcome["field_accuracy"] is None:
+            # A crash carries signals but no outcome to correlate them against.
+            failed += 1
+            continue
+        stem, spec, variant = truth_of[key]
+        out.append({
+            "file": key,
+            "truth": stem,
+            "profile": features.profile_of(key),
+            "outcome": outcome["field_accuracy"],
+            "signals": features.extract(record, spec, variant, validators,
+                                        sidecar.get(key)),
+        })
+    if failed:
+        print(f"  {failed} documents had no gradable extraction; skipped",
+              file=sys.stderr)
+    if unlabelled:
+        print(f"  {unlabelled} predictions matched no corpus label; skipped",
+              file=sys.stderr)
+    if not out:
+        raise SystemExit("nothing to score: no prediction matched a corpus label")
+    return out
+
+
+def observations(args):
+    """Build the decision set from whichever artifact was named.
+
+    Two sources, one shape. A classifier report is what the training tool writes, and
+    is the only place a *design* holdout exists -- the split that showed the image
+    model memorising templates -- so calibration measured anywhere else is measured on
+    documents the model has effectively seen. A signals sidecar is the pipeline's own
+    record, on whatever corpus was actually run. They answer different questions and
+    both are worth asking, which is why neither is the default.
+    """
+    against = getattr(args, "against", "classification")
+    score = calibration.CalibrationScore(outcome_of=against,
+                                         error_below=args.error_below)
+    if against == "extraction":
+        return extraction_observations(args, score)
+    if args.report:
+        with open(args.report, encoding="utf-8") as handle:
+            report = json.load(handle)
+        if isinstance(report, list):
+            raise SystemExit(f"{args.report} is not a classifier report; expected an "
+                             f"object with a 'documents' list")
+        for row in report.get("documents", []):
+            # `predicted` here is what the model said, before any floor. The training
+            # tool writes the raw answer, which is exactly what a coverage curve needs
+            # and what a floored record cannot supply.
+            score.add(row.get("confidence"),
+                      row.get("predicted") == row.get("truth"),
+                      row.get("profile") or _profile_of(row.get("file", "")),
+                      truth=row.get("truth", ""), answer=row.get("predicted", ""))
+        return score
+
+    from route import signals as signals_mod
+
+    rows = signals_mod.read(args.signals)
+    if not rows:
+        raise SystemExit(
+            f"no signals beside {args.signals}.\n"
+            f"  Expected {signals_mod.path_for(args.signals)}, which "
+            f"`extract.cli run --type-from classifier` writes.\n"
+            f"  Runs made before this stage existed have none; re-run to get them.")
+    only = [t.strip() for t in args.only.split(",") if t.strip()] or None
+    truth = _truth_labels(args.corpus, only)
+    missing = 0
+    for key, row in sorted(rows.items()):
+        classifier = row.get("classifier") or {}
+        if key not in truth:
+            missing += 1
+            continue
+        # The answer, whether or not it survived the floor. `withheld` is what the
+        # classifier was going to say before abstention blanked it, and skipping those
+        # documents would grade the floor against the ones it already let through --
+        # which reports every floor as costless.
+        answer = classifier.get("withheld") or ""
+        if not answer and classifier.get("doc_type"):
+            answer = classifier["doc_type"]
+            if classifier.get("variant"):
+                answer += ":" + classifier["variant"]
+        score.add(classifier.get("confidence"), answer == truth[key],
+                  _profile_of(key), truth=truth[key], answer=answer)
+    if missing:
+        print(f"  {missing} documents in the signals file have no label in the "
+              f"corpus; skipped", file=sys.stderr)
+    return score
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="eval", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -233,8 +466,92 @@ def main(argv=None):
     check.add_argument("--corpus", default=CORPUS_ROOT)
     check.add_argument("--only", default="")
 
+    cal = sub.add_parser("calibrate",
+                         help="is the confidence real, and where does the floor go")
+    source = cal.add_mutually_exclusive_group(required=True)
+    source.add_argument("--report", default="",
+                        help="a classifier report from tools/train-layout-classifier.py "
+                             "-- the only artifact carrying a design holdout")
+    source.add_argument("--signals", default="",
+                        help="a predictions file whose .signals.jsonl sidecar holds "
+                             "what the pipeline knew while deciding")
+    cal.add_argument("--corpus", default=CORPUS_ROOT)
+    cal.add_argument("--only", default="")
+    cal.add_argument("--against", default="classification",
+                     choices=["classification", "extraction"],
+                     help="what the outcome measures: whether the type was right, or "
+                          "how much of the document extracted correctly. The second "
+                          "needs --signals. Default: %(default)s")
+    cal.add_argument("--error-below", type=float, default=1.0, dest="error_below",
+                     help="a document counts as an error when its outcome is under "
+                          "this. 1.0 means every graded field has to be right "
+                          "(default: %(default)s)")
+    cal.add_argument("--target", type=float, default=0.99,
+                     help="the accuracy a floor has to hold (default: %(default)s)")
+    cal.add_argument("--format", default="table", choices=["table", "json"])
+    cal.add_argument("--out", default=None, help="where to write calibration.json")
+
+    sig = sub.add_parser(
+        "signals",
+        help="which observable signals predict a bad extraction, and what routing on "
+             "one would buy")
+    sig.add_argument("--predictions", required=True,
+                     help="a predictions file; its own provenance carries the signals")
+    sig.add_argument("--corpus", default=CORPUS_ROOT)
+    sig.add_argument("--config", default=None, help="manifest (default: di.toml)")
+    sig.add_argument("--only", default="")
+    sig.add_argument("--coverage", type=float, default=0.8,
+                     help="the share of documents left answered after routing the "
+                          "least promising to a person (default: %(default)s)")
+    sig.add_argument("--no-validators", action="store_true", dest="no_validators",
+                     help="skip re-running the rules, which is most of the runtime")
+    sig.add_argument("--format", default="table", choices=["table", "json"])
+    sig.add_argument("--out", default=None, help="where to write signals.json")
+
     args = parser.parse_args(argv)
     only = [s.strip() for s in args.only.split(",") if s.strip()] or None
+
+    if args.command == "signals":
+        from eval import signals as signal_scoring
+
+        data = signal_scoring.report(signal_rows(args), args.coverage)
+        if args.format == "json":
+            sys.stdout.write(json.dumps(data, indent=1))
+        else:
+            print(signal_scoring.render(data))
+        out = args.out or os.path.join(REPORTS_DIR, "signals.json")
+        try:
+            os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+            with open(out, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump(data, handle, indent=1)
+            if args.format != "json":
+                print(f"signals written to {out}")
+        except OSError as error:
+            print(f"could not write {out}: {error}", file=sys.stderr)
+        return 0
+
+    if args.command == "calibrate":
+        if args.against == "extraction" and not args.signals:
+            # A classifier report holds no extractions, so this combination has no
+            # answer rather than a degraded one.
+            parser.error("--against extraction needs --signals: a classifier report "
+                         "records what the type was, not what the fields came back as")
+        score = observations(args)
+        data = score.to_dict(args.target)
+        if args.format == "json":
+            sys.stdout.write(json.dumps(data, indent=1))
+        else:
+            print(calibration.render(score, args.target))
+        out = args.out or os.path.join(REPORTS_DIR, "calibration.json")
+        try:
+            os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+            with open(out, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump(data, handle, indent=1)
+            if args.format != "json":
+                print(f"calibration written to {out}")
+        except OSError as error:
+            print(f"could not write {out}: {error}", file=sys.stderr)
+        return 0
 
     if args.command == "selftest":
         report = scoring.score(args.corpus, build_predictions("self", args.corpus, only),
