@@ -4,6 +4,7 @@
     score      grade predictions and print a table (and write report.json)
     selftest   score the ground truth against itself; must come out at 1.000
     calibrate  ask whether the confidence is real, and where the floor belongs
+    signals    which observable signals predict a bad extraction, and what they buy
 
 `calibrate --against extraction` is the one worth quoting: it asks whether confidence
 predicts the fields coming back right, which is what a floor is really deciding.
@@ -29,6 +30,7 @@ import json
 import os
 import sys
 
+from core import config as config_mod
 from eval import calibration
 from eval import score as scoring
 from eval.report import ScoreReport
@@ -313,6 +315,73 @@ def extraction_observations(args, score):
     return score
 
 
+def signal_rows(args) -> list:
+    """Join predictions to labels and turn each document into signals plus an outcome.
+
+    The signals come from the prediction record's own provenance and from re-running
+    the validators, so this needs no sidecar and works on every run ever made here --
+    which matters, because the runs with the richest signals are the degraded ones and
+    they all predate the sidecar. That it works on them is the design holding up: the
+    recoverable facts were deliberately not stored, and they are recoverable.
+    """
+    from core import doctypes
+    from route import features
+    from validate.base import build_all
+
+    if not os.path.exists(args.predictions):
+        raise SystemExit(f"predictions file not found: {args.predictions}")
+    records = scoring.load_records(args.predictions)
+    only = [t.strip() for t in args.only.split(",") if t.strip()] or None
+    graded = scoring.per_document(args.corpus, records, only)
+
+    config = config_mod.load(args.config)
+    validators = build_all(config) if not args.no_validators else None
+
+    from route import signals as signals_mod
+    sidecar = signals_mod.read(args.predictions)
+    if not sidecar:
+        print("  no signals sidecar beside this run; the classifier's own confidence "
+              "will show as unavailable", file=sys.stderr)
+
+    truth_of = {}
+    for stem, rows in scoring.load_corpus(args.corpus, only).items():
+        spec = doctypes.for_label_file(stem)
+        for record in rows:
+            key = str(record.get("file", "")).replace("\\", "/")
+            if key:
+                truth_of[key] = (stem, spec, spec.variant_of(record) if spec else "")
+
+    out, failed, unlabelled = [], 0, 0
+    for record in records:
+        key = str(record.get("file", "")).replace("\\", "/")
+        outcome = graded.get(key)
+        if key not in truth_of:
+            unlabelled += 1
+            continue
+        if outcome is None or outcome["failed"] or outcome["field_accuracy"] is None:
+            # A crash carries signals but no outcome to correlate them against.
+            failed += 1
+            continue
+        stem, spec, variant = truth_of[key]
+        out.append({
+            "file": key,
+            "truth": stem,
+            "profile": features.profile_of(key),
+            "outcome": outcome["field_accuracy"],
+            "signals": features.extract(record, spec, variant, validators,
+                                        sidecar.get(key)),
+        })
+    if failed:
+        print(f"  {failed} documents had no gradable extraction; skipped",
+              file=sys.stderr)
+    if unlabelled:
+        print(f"  {unlabelled} predictions matched no corpus label; skipped",
+              file=sys.stderr)
+    if not out:
+        raise SystemExit("nothing to score: no prediction matched a corpus label")
+    return out
+
+
 def observations(args):
     """Build the decision set from whichever artifact was named.
 
@@ -422,8 +491,44 @@ def main(argv=None):
     cal.add_argument("--format", default="table", choices=["table", "json"])
     cal.add_argument("--out", default=None, help="where to write calibration.json")
 
+    sig = sub.add_parser(
+        "signals",
+        help="which observable signals predict a bad extraction, and what routing on "
+             "one would buy")
+    sig.add_argument("--predictions", required=True,
+                     help="a predictions file; its own provenance carries the signals")
+    sig.add_argument("--corpus", default=CORPUS_ROOT)
+    sig.add_argument("--config", default=None, help="manifest (default: di.toml)")
+    sig.add_argument("--only", default="")
+    sig.add_argument("--coverage", type=float, default=0.8,
+                     help="the share of documents left answered after routing the "
+                          "least promising to a person (default: %(default)s)")
+    sig.add_argument("--no-validators", action="store_true", dest="no_validators",
+                     help="skip re-running the rules, which is most of the runtime")
+    sig.add_argument("--format", default="table", choices=["table", "json"])
+    sig.add_argument("--out", default=None, help="where to write signals.json")
+
     args = parser.parse_args(argv)
     only = [s.strip() for s in args.only.split(",") if s.strip()] or None
+
+    if args.command == "signals":
+        from eval import signals as signal_scoring
+
+        data = signal_scoring.report(signal_rows(args), args.coverage)
+        if args.format == "json":
+            sys.stdout.write(json.dumps(data, indent=1))
+        else:
+            print(signal_scoring.render(data))
+        out = args.out or os.path.join(REPORTS_DIR, "signals.json")
+        try:
+            os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+            with open(out, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump(data, handle, indent=1)
+            if args.format != "json":
+                print(f"signals written to {out}")
+        except OSError as error:
+            print(f"could not write {out}: {error}", file=sys.stderr)
+        return 0
 
     if args.command == "calibrate":
         if args.against == "extraction" and not args.signals:
