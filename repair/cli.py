@@ -339,12 +339,13 @@ def main(argv=None):
     # Stamped before anything is rendered, so a result on disk always says what made
     # it. Two bugs in this phase invalidated whole sets of numbers, and both times the
     # expensive part was working out which artifacts had inherited them.
-    data["stamp"] = stamp_mod.stamp(args.corpus, {
-        "documents_selected": len(rows),
-        "arms": names,
-        "budget": budget,
-        "flagged_only": args.flagged_only,
-    })
+    data["stamp"] = stamp_mod.stamp(
+        args.corpus,
+        {"arms": names, "budget": budget, "flagged_only": args.flagged_only},
+        files=[r["file"] for r in rows],
+        config=config, reader=args.normalizer or None,
+        doctypes=sorted({(r["spec"], r["variant"]) for r in rows},
+                        key=lambda p: (p[0].name, p[1])))
     print(f"  {stamp_mod.describe(data['stamp'])}")
     if budget > 1:
         data["budget_curve"] = scoring_repair.budget_curve(arms, names, budget)
