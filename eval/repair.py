@@ -213,6 +213,64 @@ def compare(arms: dict) -> dict:
                              default=0)}
 
 
+def goodhart(arm: dict) -> dict:
+    """Did the gates go quiet on the same documents that got worse?
+
+    The aggregate version of this question -- 52 gates cleared, 52 documents damaged --
+    is suggestive and proves nothing. Two disjoint groups of 52 would produce identical
+    totals and mean something entirely different: rules being satisfied on one set of
+    documents while a separate set degraded. Only the per-document join separates
+    "silencing the critics" from "two unrelated things happened".
+
+    The cell that matters is `cleared_and_damaged`: a document that stopped tripping
+    every rule *and* came back further from the truth. There is no benign reading of
+    that. It is what blanking the fields a rule reads produces, and it is the reason
+    success in this module is defined against the corpus and never against the gates.
+
+    `lift` is how much more likely a damaged document was to clear its gates than an
+    undamaged one. Above 1.0 means the rules are being satisfied by exactly the changes
+    that hurt.
+    """
+    deltas = arm.get("deltas") or {}
+    gates = arm.get("gates") or {}
+    shared = sorted(set(deltas) & set(gates))
+    if not shared:
+        return {"documents": 0, "available": False}
+
+    cells = {"cleared_and_damaged": 0, "cleared_and_improved": 0,
+             "cleared_and_unchanged": 0, "held_and_damaged": 0,
+             "held_and_improved": 0, "held_and_unchanged": 0}
+    cleared_damaged = cleared_ok = damaged = intact = 0
+    for key in shared:
+        delta = deltas[key]
+        before, after = gates[key]
+        # Only a document that had something to clear can clear it.
+        cleared = before > 0 and after == 0
+        state = ("damaged" if delta < -EPSILON
+                 else "improved" if delta > EPSILON else "unchanged")
+        cells[f"{'cleared' if cleared else 'held'}_and_{state}"] += 1
+        if state == "damaged":
+            damaged += 1
+            cleared_damaged += cleared
+        else:
+            intact += 1
+            cleared_ok += cleared
+
+    rate_damaged = cleared_damaged / damaged if damaged else None
+    rate_intact = cleared_ok / intact if intact else None
+    return {
+        "documents": len(shared),
+        "available": True,
+        **cells,
+        "clear_rate_when_damaged": (round(rate_damaged, 4)
+                                    if rate_damaged is not None else None),
+        "clear_rate_otherwise": (round(rate_intact, 4)
+                                 if rate_intact is not None else None),
+        "lift": (round(rate_damaged / rate_intact, 3)
+                 if rate_damaged and rate_intact else None),
+    }
+
+
 def by_slice(score: RepairScore, key: str = "doc_type") -> list:
     """Per type or per profile. Repair is not uniform and an average hides which half."""
     groups = defaultdict(list)
@@ -326,6 +384,33 @@ def render(data: dict, slices: dict = None) -> str:
             out.append("")
             out.append(f"  {name} damaged more documents than it improved "
                        f"({row['damaged']} against {row['improved']}).")
+
+    for name, row in data["arms"].items():
+        table = goodhart(row)
+        if not table.get("available"):
+            continue
+        cad = table["cleared_and_damaged"]
+        if not cad and not table["cleared_and_improved"]:
+            continue
+        out.append("")
+        out.append(f"  GATES AGAINST TRUTH  -  {name}")
+        out.append(f"  {'':<22}{'damaged':>10}{'improved':>10}{'unchanged':>11}")
+        out.append(f"  {'gates cleared':<22}{cad:>10}"
+                   f"{table['cleared_and_improved']:>10}"
+                   f"{table['cleared_and_unchanged']:>11}")
+        out.append(f"  {'gates still firing':<22}{table['held_and_damaged']:>10}"
+                   f"{table['held_and_improved']:>10}"
+                   f"{table['held_and_unchanged']:>11}")
+        if cad:
+            out.append(f"  {cad} documents stopped tripping every rule AND came back "
+                       f"further from the truth.")
+            out.append("  There is no benign reading of that cell.")
+        if table.get("lift") and table["lift"] > 1.0:
+            out.append(f"  A damaged document was {table['lift']:.2f}x more likely to "
+                       f"clear its gates than an undamaged one:")
+            out.append(f"  {table['clear_rate_when_damaged']:.1%} against "
+                       f"{table['clear_rate_otherwise']:.1%}. The rules are being "
+                       f"satisfied by the changes that hurt.")
 
     for key, rows in (slices or {}).items():
         out.append("")

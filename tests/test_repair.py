@@ -201,3 +201,69 @@ class TestAWinBetweenTwoLosersIsNotAWin:
         data = score.to_dict()
         assert data["gates"]["invoices/x.pdf"] == [2, 0]
         assert data["deltas"]["invoices/x.pdf"] < 0
+
+
+class TestTheGoodhartCrossTab:
+    """Whether the gates went quiet on the same documents that got worse.
+
+    The aggregate -- 52 cleared, 52 damaged -- is suggestive and proves nothing. Two
+    disjoint groups of 52 give identical totals and mean something entirely different.
+    """
+
+    def test_disjoint_groups_are_not_reported_as_silencing(self):
+        """The claim this guards. Same totals, innocent structure: the documents that
+        cleared their gates are not the documents that got worse."""
+        from eval.repair import goodhart
+
+        score = RepairScore()
+        for i in range(5):        # cleared, and improved
+            score.add(outcome(0.4, 0.9, 2, 0, file=f"a{i}.pdf"))
+        for i in range(5):        # damaged, gates still firing
+            score.add(outcome(0.9, 0.4, 2, 2, file=f"b{i}.pdf"))
+        table = goodhart(score.to_dict())
+        assert table["cleared_and_damaged"] == 0
+        assert table["cleared_and_improved"] == 5
+        assert table["held_and_damaged"] == 5
+        assert table["lift"] in (None, 0.0) or table["lift"] < 1.0
+
+    def test_the_damning_cell_is_counted_and_named(self):
+        from eval.repair import goodhart
+
+        score = RepairScore()
+        for i in range(6):        # cleared every rule AND got worse
+            score.add(outcome(0.9, 0.3, 2, 0, file=f"a{i}.pdf"))
+        for i in range(6):        # untouched
+            score.add(outcome(0.8, 0.8, 1, 1, file=f"b{i}.pdf"))
+        table = goodhart(score.to_dict())
+        assert table["cleared_and_damaged"] == 6
+        text = render(compare({"reprompt": score}))
+        assert "no benign reading" in text
+
+    def test_lift_says_damage_and_clearing_travel_together(self):
+        from eval.repair import goodhart
+
+        score = RepairScore()
+        for i in range(8):        # damaged, all cleared
+            score.add(outcome(0.9, 0.3, 2, 0, file=f"a{i}.pdf"))
+        for i in range(8):        # unchanged, none cleared
+            score.add(outcome(0.8, 0.8, 2, 2, file=f"b{i}.pdf"))
+        table = goodhart(score.to_dict())
+        assert table["clear_rate_when_damaged"] == 1.0
+        assert table["clear_rate_otherwise"] == 0.0
+        assert table["lift"] is None       # undefined against a zero rate, not infinite
+
+    def test_a_document_with_no_gates_cannot_clear_them(self):
+        """gates_before == 0 means nothing was firing. Counting that as `cleared`
+        would credit the loop for silence it did not produce."""
+        from eval.repair import goodhart
+
+        score = RepairScore()
+        score.add(outcome(0.9, 0.3, gates_before=0, gates_after=0, file="a.pdf"))
+        table = goodhart(score.to_dict())
+        assert table["cleared_and_damaged"] == 0
+        assert table["held_and_damaged"] == 1
+
+    def test_a_report_without_per_document_gates_says_so(self):
+        from eval.repair import goodhart
+
+        assert goodhart({"deltas": {"a.pdf": -0.5}})["available"] is False
