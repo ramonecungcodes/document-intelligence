@@ -31,6 +31,7 @@ import os
 import sys
 
 from core import config as config_mod
+from core import stamp as stamp_mod
 from eval import calibration
 from eval import score as scoring
 from eval.report import ScoreReport
@@ -533,6 +534,7 @@ def main(argv=None):
                 }, handle, indent=1)
             print(f"  per-document rows written to {args.rows}")
         data = signal_scoring.report(rows, args.coverage)
+        data["stamp"] = stamp_mod.stamp(args.corpus)
         if args.format == "json":
             sys.stdout.write(json.dumps(data, indent=1))
         else:
@@ -556,6 +558,7 @@ def main(argv=None):
                          "records what the type was, not what the fields came back as")
         score = observations(args)
         data = score.to_dict(args.target)
+        data["stamp"] = stamp_mod.stamp(args.corpus)
         if args.format == "json":
             sys.stdout.write(json.dumps(data, indent=1))
         else:

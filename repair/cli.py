@@ -333,7 +333,19 @@ def main(argv=None):
     if arms:
         arms["no_repair"] = scoring_repair.no_repair_arm(
             next(iter(arms.values())).outcomes)
+    from core import stamp as stamp_mod
+
     data = scoring_repair.compare(arms)
+    # Stamped before anything is rendered, so a result on disk always says what made
+    # it. Two bugs in this phase invalidated whole sets of numbers, and both times the
+    # expensive part was working out which artifacts had inherited them.
+    data["stamp"] = stamp_mod.stamp(args.corpus, {
+        "documents_selected": len(rows),
+        "arms": names,
+        "budget": budget,
+        "flagged_only": args.flagged_only,
+    })
+    print(f"  {stamp_mod.describe(data['stamp'])}")
     if budget > 1:
         data["budget_curve"] = scoring_repair.budget_curve(arms, names, budget)
     # Transitions at the full budget: what the loop did to the fields, end to end.

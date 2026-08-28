@@ -217,7 +217,11 @@ def main(argv=None):
     try:
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         with open(out, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump({"policy": policy.describe(), **data}, handle, indent=1)
+            from core import stamp as stamp_mod
+
+            json.dump({"policy": policy.describe(),
+                       "stamp": stamp_mod.stamp(args.corpus), **data},
+                      handle, indent=1)
         if args.format != "json":
             print(f"routing written to {out}")
     except OSError as error:
