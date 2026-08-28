@@ -33,6 +33,11 @@ classifier = "cascade"
 # glance what checks a number was produced under.
 validator = "arithmetic, format, range, required, temporal"
 
+# Who sees the answer. Everything before this stage decides what the document says;
+# this decides whether a person has to check it. Added in Phase 5, because until there
+# was something measured to route on there was nothing for it to do.
+router = "policy"
+
 # ------------------------------------------------------------------ splitters
 # Measured on 120 bundles holding 333 documents. The classifier-per-page splitter,
 # which cuts where the predicted type changes, lost to cutting everywhere:
@@ -142,7 +147,24 @@ ambiguous = "invoice|purchase_order"
 # model was going to get right anyway, and each one is an OCR pass.
 escalate_below = 0.0
 
-# The floor that actually governs this pipeline, and it is currently off.
+# What the escalation buys, and where it stops buying anything. Cascade against its own
+# primary on the design holdout, at matched coverage:
+#
+#   floor   coverage   DiT alone   cascade    gain
+#   0.50     0.944      0.824       0.904     +0.081
+#   0.60     0.771      0.910       0.946     +0.036
+#   0.70     0.618      0.966       0.978     +0.011
+#   0.75     0.576      0.976       0.976     +0.000
+#   0.85     0.472      1.000       1.000     +0.000
+#
+# Every document the text arbiter rescues sits below 0.75, so at the 0.85 floor set
+# below the cascade and bare DiT are the same pipeline and the OCR is spent for
+# nothing. The arbiter earns its cost only if the floor is lowered for throughput.
+# Worth knowing before reading 0.944 overall as an argument for the escalation at any
+# operating point.
+
+# The floor that actually governs this pipeline, measured on the cascade rather than
+# inherited from its primary.
 #
 # `[classifiers.dit] abstain_below = 0.9` above does nothing while the cascade is the
 # chosen classifier: the cascade builds its members with abstention disabled on
@@ -150,19 +172,77 @@ escalate_below = 0.0
 # runner-up, and the escalation then has nothing to arbitrate. So the floor has to be
 # stated here or it is not stated at all. It read as set for as long as it was not.
 #
-# Left at zero until it can be set from a cascade run rather than a DiT one. The
-# numbers that will decide it, from `eval.cli calibrate` on the design holdout, are
-# DiT's alone -- and they already say the 0.9 above was the wrong number:
+# 0.85, from `eval.cli calibrate --report reports/cascade-template.json` -- the cascade
+# run over documents held out by page design, which is the split that does not let the
+# model recognise a layout it trained on:
 #
-#   holdout      floor for zero errors   coverage at that floor   at 0.90
-#   source        0.75                    0.826                    0.736
-#   design        0.85                    0.472                    0.438
+#   floor   coverage   accuracy   errors through
+#   0.60     0.771      0.946      6
+#   0.70     0.618      0.978      2
+#   0.85     0.472      1.000      0
+#   0.90     0.438      1.000      0
 #
-# On the split that does not let the model recognise a page design it was trained on,
-# a 0.90 floor answers 43.8% of documents and 0.85 answers 47.2% -- both with nothing
-# wrong. Five points of coverage were being given away for no error reduction.
+# 0.85 rather than 0.90 because they answer with the same zero errors and 0.85 answers
+# five points more of the corpus. 0.90 was giving away coverage for nothing, which is
+# what an unmeasured floor does.
 #
-# The cascade's own floor cannot be assumed equal to either row. It reports DiT's
-# confidence against an answer the text arbiter may have corrected, so its confidence
-# is attached to a better answer than the number was measured on.
-abstain_below = 0.0
+# The honest reading of 0.472 is that on page designs it has never seen, this model can
+# be trusted unsupervised on slightly under half the corpus. Lowering the floor to 0.60
+# answers 77% at 0.946 -- six wrong documents in 144 -- and that is a throughput
+# decision rather than a modelling one, which is why the table is here and not just the
+# number.
+abstain_below = 0.85
+
+# ------------------------------------------------------------------ router
+# Independent gates, not one blended score. Two things were measured and both point
+# here: the classifier's confidence is well calibrated for classification and carries
+# almost nothing about whether the extraction was right (lift +0.028 against +0.120
+# for the best observable signal), and a wrong type is a different failure from a bad
+# field -- the type chose the schema, so nothing downstream of it can be right.
+#
+# Every threshold below is a number produced by `eval.cli signals` or
+# `eval.cli calibrate`, and lives here so the figure that governs the pipeline sits
+# next to the evidence for it.
+
+[routers.policy]
+# The measured zero-error floor from the cascade's design holdout. See the note under
+# [classifiers.cascade]; this is the same number, applied at the routing stage rather
+# than inside the classifier, so a declined document is queued rather than discarded.
+classifier_floor = 0.85
+# Measured cost of that floor on documents whose designs the model *has* seen: on the
+# 175-document clean run it routes 23 documents, always as the only gate to fire, and
+# those 23 extracted at a mean field accuracy of 0.992. On seen designs this gate is
+# almost pure cost. It is kept at 0.85 anyway, because the deployment assumption is
+# vendor templates nobody trained on -- which is the case the number was measured for,
+# and where classification accuracy falls to 0.875. Lower it only for a corpus known to
+# be all-familiar, and know that is what you are asserting.
+
+# The strongest single signal in the corpus: rank correlation -0.786 with field
+# accuracy, lift +0.120 at 80% coverage, and the best signal inside every document
+# type -- which is what makes it trustworthy, since the classifier's own confidence
+# failed exactly that test. On the 1,055 degraded documents:
+#
+#   ceiling   reviewed   accepted   accuracy of accepted
+#   0.1        664        391        0.838
+#   0.2        469        586        0.805
+#   0.3        418        637        0.770
+#   none         0       1055        0.552
+#
+# 0.2 holds the accepted half above 0.80 mean field accuracy against a 0.552 corpus
+# baseline. Tightening to 0.1 buys three points and sends another 195 documents to a
+# person, which is a throughput decision and not a modelling one.
+blank_share_ceiling = 0.2
+
+# Zero means any error routes the document, which is the entire point of a rule being
+# severity error rather than warning. Warnings deliberately do not gate: measured at
+# lift +0.001, they carry nothing, and routing on them would cost reviewer time for no
+# accuracy. That warnings are inert and errors are not is the Phase 4 severity split
+# paying for itself.
+validator_errors_ceiling = 0
+
+# Off. Both carry real lift on their own -- 0.105 and 0.107 -- but they are largely
+# reading the same thing blank_share reads, from the other end: a page that could not
+# be read produces an answer full of blanks. Turn one on only if the `alone` column of
+# `route.cli score` shows it catching documents nothing else does.
+ocr_confidence_floor = 0.0
+words_floor = 0.0

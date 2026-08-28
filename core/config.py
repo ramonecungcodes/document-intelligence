@@ -20,7 +20,11 @@ DEFAULT_PATHS = ("di.toml", "/app/di.toml")
 
 # A slot is a stage of the pipeline. Only `extractor` is filled today; the rest are
 # named here so the manifest has somewhere obvious to grow into.
-SLOTS = ("source", "normalizer", "splitter", "classifier", "extractor", "validator", "sink")
+# `router` sits between validation and the sink: everything before it decides what
+# the document says, and it decides who sees the answer. Added in Phase 5, which is
+# where there was finally something measured to route on.
+SLOTS = ("source", "normalizer", "splitter", "classifier", "extractor", "validator",
+         "router", "sink")
 
 
 @dataclass
