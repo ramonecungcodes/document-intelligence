@@ -11,6 +11,8 @@ implementations:
     native      the embedded text layer, when the PDF has one. Free and exact.
     tesseract   classical OCR over rasterised pages. Cheap, no GPU.
     doctr       neural detection + recognition. Costs a PyTorch dependency.
+    paddle      PP-OCRv5, with document unwarping. Costs a PaddlePaddle
+                dependency, installed separately in .venv-paddle.
     cascade     cheapest first, escalating only where confidence is poor.
     consensus   all of them, keeping the best and reporting whether they agreed.
     cached      text a previous run already produced, so extraction never re-OCRs.
@@ -29,6 +31,6 @@ from normalize.base import Extracted, build, NORMALIZERS  # noqa: F401
 # lazily inside read(), so importing them here costs nothing and keeps the plugin
 # listable -- `extract.cli config` can show a normalizer this image cannot run, which
 # is a better error than pretending it does not exist.
-from normalize import native, tesseract, doctr, composite, cached  # noqa: F401,E402
+from normalize import native, tesseract, doctr, paddle, composite, cached  # noqa: F401,E402
 
 __all__ = ["Extracted", "build", "NORMALIZERS"]
