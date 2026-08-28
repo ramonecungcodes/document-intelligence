@@ -920,10 +920,18 @@ def render(data: dict, slices: dict = None) -> str:
             out.append("      not measured, so do not quote the point estimate.")
             out.append(f"      Detecting a {MIN_USEFUL_DELTA:+.2f} effect needs about "
                        f"{need if need else 'many more'} documents.")
+        elif name in harmful:
+            # Only when THIS arm is itself harmful. It fired on any harmful arm in the
+            # report, so a positive guided arm beating a negative blind one printed
+            # "both arms are net-negative" -- a false sentence, in the block whose
+            # entire job is to stop a true number being read as a good one.
+            out.append("      Resolvable, but this arm is net-negative against doing")
+            out.append("      nothing. It is less harmful, not helpful.")
+            out.append("      It should not run on these documents.")
         elif harmful:
-            out.append("      Resolvable, but both arms are net-negative against doing")
-            out.append("      nothing. This is less harmful, not helpful.")
-            out.append("      Neither should run on these documents.")
+            out.append("      Resolvable, and this arm is not itself net-negative --")
+            out.append(f"      only {', '.join(harmful)} is. The guidance is what")
+            out.append("      separates them.")
         else:
             out.append("      The feedback is worth something beyond a second sample.")
 

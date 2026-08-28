@@ -174,7 +174,7 @@ class TestAWinBetweenTwoLosersIsNotAWin:
     def test_but_it_is_qualified_in_the_same_breath(self):
         text = render(self.losers())
         assert "less harmful" in text
-        assert "Neither should run on these documents." in text
+        assert "It should not run on these documents." in text
 
     def test_a_net_negative_arm_is_called_out_above_the_fold(self):
         """Not in a footnote. An arm scoring below zero should be off, and that has to
@@ -535,3 +535,29 @@ class TestFieldTransitions:
         assert states["invoice_number"] == "right"
         assert states["total"] == "wrong"
         assert states["po_number"] == "fabricated"
+
+
+class TestTheCaveatFiresOnTheRightArm:
+    def test_a_positive_arm_beating_a_negative_one_is_not_called_harmful(self):
+        """It was. The caveat fired whenever ANY arm in the report was net-negative,
+        so a positive guided arm beating a negative blind one printed "both arms are
+        net-negative" -- a false sentence, in the block whose whole job is to stop a
+        true number being read as a good one."""
+        data = compare({
+            "no_repair": arm("no_repair", [(0.5, 0.5)] * 30),
+            "rerun": arm("rerun", [(0.5, 0.4)] * 30),
+            "reprompt": arm("reprompt", [(0.5, 0.55)] * 30),
+        })
+        text = render(data)
+        assert "both arms are net-negative" not in text
+        assert "not itself net-negative" in text
+
+    def test_a_harmful_arm_still_gets_the_caveat(self):
+        data = compare({
+            "no_repair": arm("no_repair", [(0.5, 0.5)] * 30),
+            "rerun": arm("rerun", [(0.5, 0.3)] * 30),
+            "reprompt": arm("reprompt", [(0.5, 0.4)] * 30),
+        })
+        text = render(data)
+        assert "this arm is net-negative" in text
+        assert "It should not run on these documents." in text
