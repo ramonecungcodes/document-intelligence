@@ -281,6 +281,60 @@ and uneven lighting are recovered by docTR's detector and lost by Tesseract's.
 produced. The right system response is confidence routing to a person, and knowing
 where that threshold sits is what this phase bought.
 
+### Revisited after Phase 6: the engine choice was worth more than the loop
+
+The table above ranked two engines on the cohort as it stood then. Phase 6 built the
+machinery to compare two systems *properly* -- paired per document, resampled over
+source pages -- and it was worth pointing that machinery back at this decision, with a
+third engine added.
+
+Three engines, the identical 75 documents, identical model and prompts. Only the engine
+varies. `tools/compare-ocr-engines.py` reproduces it.
+
+| engine | all | fax | light | photo |
+|---|---|---|---|---|
+| docTR (incumbent) | `0.657` | `0.285` | `0.902` | `0.826` |
+| PaddleOCR PP-OCRv5 | `0.653` | `0.248` | `0.892` | `0.878` |
+| **PaddleOCR PP-OCRv6** | **`0.702`** | **`0.336`** | **`0.925`** | **`0.897`** |
+
+Those are three separate numbers per row and the difference between two of them carries
+no interval, which is exactly the mistake this project keeps finding in its own work. The
+comparison that means something is paired, because every engine read the same page:
+
+| comparison | delta | interval | |
+|---|---|---|---|
+| PP-OCRv6 vs docTR, all | **`+0.052`** | [+0.022, +0.088] | resolvable |
+| PP-OCRv6 vs docTR, fax | **`+0.058`** | [+0.018, +0.099] | resolvable |
+| PP-OCRv6 vs docTR, photo | **`+0.077`** | [+0.005, +0.152] | resolvable |
+| PP-OCRv6 vs docTR, light | `+0.031` | [-0.008, +0.077] | spans zero |
+| PP-OCRv5 vs docTR, all | `-0.000` | [-0.037, +0.036] | spans zero |
+
+**PP-OCRv5 was not worth switching to.** Dead level with docTR at `-0.0001` -- better on
+photographs, worse on faxes, neither resolvable. It looked promising on an unpaired
+glance at aggregate numbers, which is the comparison that carries no interval.
+
+**PP-OCRv6 is, and it wins where the accuracy actually is.** Resolvably better on fax and
+photo, the two profiles that were breaking the pipeline, and not resolvable on `light`
+where all three engines are already above `0.89` and there is nothing left to win. A gain
+concentrated on the hard profiles and absent on the easy one is the right shape for an
+engine difference; the reverse would suggest measurement noise.
+
+One caveat belongs beside the number. There is no same-engine control arm here, so this
+delta is *the engine plus one sample of extractor noise*. Phase 6 sized that noise
+directly -- a blind re-run of the identical request on degraded documents moved accuracy
+by `-0.010` -- and the gain here is five times that, on 28 documents better against 9
+worse. It survives the caveat. It is not free of it.
+
+**The comparison against Phase 6 is the point.** Perfect selection of which documents to
+repair -- the most interesting question that phase left open -- is worth `+0.003`.
+Changing one line in the manifest is worth `+0.052`. The loop was the harder engineering
+and the smaller number, and only a paired comparison makes those two commensurable enough
+to say so.
+
+The engine has not been switched here. That is a corpus-wide re-normalisation and every
+downstream number in this README was measured through docTR; changing it silently would
+invalidate the lot. It is Phase 7's first task, and this is the evidence for it.
+
 ### The optimisation that cost 31 points
 
 The cascade -- cheap engine first, escalate to the expensive one only where confidence
