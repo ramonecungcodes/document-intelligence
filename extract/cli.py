@@ -279,6 +279,50 @@ def _resolve_out(value: str) -> str:
     return value
 
 
+def from_file_list(path: str, corpus_root: str, only) -> tuple:
+    """Documents named in a file, one corpus-relative path per line.
+
+    Every named document must exist in the corpus and carry a label; anything that does
+    not is an error rather than a skip. A comparison that quietly drops documents is a
+    comparison between two different sets, which is the failure this option exists to
+    prevent.
+    """
+    from core import doctypes
+    from eval.score import load_corpus
+
+    if not os.path.exists(path):
+        raise SystemExit(f"document list not found: {path}")
+    with open(path, encoding="utf-8") as handle:
+        wanted = [line.strip().replace("\\", "/") for line in handle if line.strip()]
+
+    known, unknown = {}, set()
+    for stem, records in load_corpus(corpus_root, only).items():
+        spec = doctypes.for_label_file(stem)
+        if spec is None:
+            unknown.add(stem)
+            continue
+        for record in records:
+            key = str(record.get("file", "")).replace("\\", "/")
+            if key:
+                # The DocType itself, not its name -- `collect()` returns the object
+                # and everything downstream calls methods on it.
+                known[key] = (spec, spec.variant_of(record))
+
+    jobs, missing = [], []
+    for relative in wanted:
+        if relative not in known:
+            missing.append(relative)
+            continue
+        doc_type, variant = known[relative]
+        jobs.append((doc_type, relative, variant))
+    if missing:
+        raise SystemExit(
+            f"{len(missing)} of {len(wanted)} documents in {path} have no label in "
+            f"{corpus_root}; first: {missing[0]}. "
+            f"Dropping them would compare two different sets.")
+    return jobs, unknown
+
+
 def run(args):
     corpus_root = args.corpus
     if args.manifest:
@@ -290,6 +334,15 @@ def run(args):
         # doctype is filled in by the classifier; None is a placeholder the
         # classification pass replaces, and nothing may read it before then.
         jobs, unknown = [(None, rel, "") for rel in relatives], set()
+    elif args.files:
+        # An explicit document list, which `--limit` cannot express.
+        #
+        # An A/B across OCR engines has to run over the SAME documents, and the engines
+        # are cached per document -- so the set has to be named, not re-derived. It was
+        # re-derived here once, with `--limit 15` standing in for a set cached earlier:
+        # the two overlapped on 52 of 75 and the run died on the other 23. `--limit`
+        # answers "some documents of each type"; a comparison needs "these documents".
+        jobs, unknown = from_file_list(args.files, corpus_root, args.only)
     else:
         jobs, unknown = collect(corpus_root, args.only, args.limit)
     for stem in sorted(unknown):
@@ -651,6 +704,11 @@ def main(argv=None):
     go = sub.add_parser("run", help="extract every document in the corpus")
     go.add_argument("--corpus", default=CORPUS_ROOT)
     go.add_argument("--only", default="", help="comma-separated label stems")
+    go.add_argument("--files", default="",
+                    help="a file of corpus-relative paths, one per line, naming exactly "
+                         "the documents to extract. Use this for any A/B across engines "
+                         "or models: --limit answers 'some documents of each type' and "
+                         "a comparison needs 'these documents'")
     go.add_argument("--limit", type=int, default=0,
                     help="N documents per type, spread across its variants")
     go.add_argument("--out", default=None, metavar="NAME",

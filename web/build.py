@@ -263,6 +263,335 @@ def missing(title, command, why):
             f'<pre class="command">{esc(command)}</pre></section>')
 
 
+def signals_panel(data) -> str:
+    """What predicts a bad extraction, with the model's self-report in the table.
+
+    The control row is the point of this panel, so it is styled as a row and not as a
+    footnote. Read without it, a lift of 0.120 is a number with no scale; read with it,
+    it is four times what asking the model was worth.
+    """
+    if not data or not data.get("pooled"):
+        return missing(
+            "Signals",
+            "python -m eval.cli signals --predictions reports/degraded-full.jsonl "
+            "--corpus data/degraded",
+            "No signal report was found, so nothing here says which observations "
+            "predict a bad extraction.")
+    rows = [r for r in data["pooled"] if r.get("available")]
+    rows.sort(key=lambda r: -(r["lift"] if r["lift"] is not None else -9))
+    body = ""
+    for row in rows:
+        control = row["signal"].startswith("classifier_")
+        lift = row["lift"]
+        tone = ("flat" if control else
+                "pass" if (lift or 0) >= 0.08 else
+                "warn" if (lift or 0) > 0.01 else "fail")
+        note = ("the model's own confidence" if control else
+                "" if row.get("direction_agrees") is not False
+                else "ran opposite to expectation")
+        body += (
+            f'<tr{" style=\"background:var(--surface-sunken)\"" if control else ""}>'
+            f'<td class="mono">{esc(row["signal"])}</td>'
+            f'<td class="mono r">{row["available"]}</td>'
+            f'<td class="mono r">{num(row.get("rho"))}</td>'
+            f'<td><span class="meter"><i style="width:'
+            f'{min(100, max(0, (lift or 0) * 700)):.0f}%;background:var(--{tone})">'
+            f'</i></span><span class="mono">{num(lift)}</span></td>'
+            f'<td class="mono" style="color:var(--ink-faint)">{esc(note)}</td></tr>')
+    return (
+        '<section class="card">'
+        '<div class="card-head"><h2>What predicts a bad extraction</h2>'
+        f'<span class="hint">{data["documents"]} degraded documents &middot; '
+        f'routing the least promising {1 - data["coverage"]:.0%}</span></div>'
+        '<p class="prose">Lift is accuracy over sending the same number of documents '
+        'to a person at random. A signal worth wiring up has a lift, not merely a '
+        'correlation. The shaded row is the model&rsquo;s own confidence, scored on the '
+        'same documents by the same method &mdash; measured separately it would be an '
+        'anecdote.</p>'
+        '<div class="scroll"><table><thead><tr><th>signal</th><th class="r">n</th>'
+        '<th class="r">correlation</th><th>lift over random</th><th>note</th>'
+        f'</tr></thead><tbody>{body}</tbody></table></div></section>')
+
+
+def confound_panel(data) -> str:
+    """Confidence against extraction, and why the pooled number is the wrong one."""
+    if not data or not data.get("by_truth"):
+        return ""
+    rows = sorted(data["by_truth"], key=lambda r: -r["mean_confidence"])
+    body = "".join(
+        f'<tr><td class="mono">{esc(r["truth"])}</td>'
+        f'<td class="mono r">{r["documents"]}</td>'
+        f'<td class="mono r">{num(r["mean_confidence"])}</td>'
+        f'<td class="mono r">{num(r["outcome"])}</td>'
+        f'<td class="mono r" style="color:var(--'
+        f'{"fail" if r["outcome"] < r["mean_confidence"] else "pass"})">'
+        f'{r["outcome"] - r["mean_confidence"]:+.3f}</td></tr>' for r in rows)
+    gap = data.get("mean_gap")
+    return (
+        '<section class="card finding">'
+        '<div class="card-head"><h2><span class="dot"></span>'
+        'The confidence is real, and about the wrong thing</h2>'
+        f'<span class="hint">{data["documents"]} documents</span></div>'
+        '<p class="prose">The classifier is well calibrated for classification. '
+        'Scored against whether the <em>extraction</em> came back right &mdash; which '
+        'is what a floor actually decides &mdash; raising the floor makes the accepted '
+        'half worse. Split by type it is a confound, not a broken model: the types it '
+        'is surest about are the ones that extract worst.</p>'
+        '<div class="scroll"><table><thead><tr><th>type</th><th class="r">n</th>'
+        '<th class="r">confidence</th><th class="r">extracted</th>'
+        f'<th class="r">gap</th></tr></thead><tbody>{body}</tbody></table></div>'
+        f'<p class="prose" style="margin-top:12px">Pooled gap '
+        f'<span class="mono">{gap:+.3f}</span> over all types, which averages across '
+        f'the variable driving both columns. Read the rows, not the total.</p>'
+        '</section>')
+
+
+def routing_panel(data, label: str) -> str:
+    """What the policy accepted, and what each gate caught that nothing else did."""
+    if not data:
+        return ""
+    gates = data.get("gates") or {}
+    body = "".join(
+        f'<tr><td class="mono">{esc(name)}</td>'
+        f'<td class="mono r">{block["fired"]}</td>'
+        f'<td class="mono r">{block["only_reason"]}</td>'
+        f'<td class="mono r">{num(block["mean_outcome"])}</td></tr>'
+        for name, block in sorted(gates.items(), key=lambda kv: -kv[1]["fired"]))
+    lift = data.get("lift")
+    tone = "pass" if (lift or 0) > 0.05 else "warn" if (lift or 0) > 0 else "fail"
+    return (
+        '<section class="card">'
+        f'<div class="card-head"><h2>Routing &mdash; {esc(label)}</h2>'
+        f'<span class="hint">{data["documents"]} documents</span></div>'
+        '<div class="readout">'
+        f'<div><div class="k">ACCEPTED</div><div class="v">'
+        f'{rate(data["coverage"])}</div></div>'
+        f'<div><div class="k">ACCURACY ACCEPTED</div><div class="v">'
+        f'{rate(data["accuracy_accepted"])}</div></div>'
+        f'<div><div class="k">AT RANDOM</div><div class="v" '
+        f'style="color:var(--ink-faint)">{rate(data["baseline"])}</div></div>'
+        f'<div><div class="k">LIFT</div><div class="v" style="color:var(--{tone})">'
+        f'{lift:+.3f}</div></div>'
+        f'<div><div class="k">REVIEWED BUT PERFECT</div><div class="v">'
+        f'{data["reviewed_but_perfect"]}</div></div>'
+        '</div>'
+        '<p class="prose" style="margin-top:14px">&ldquo;Reviewed but perfect&rdquo; is '
+        'the cost of the policy &mdash; documents a person looked at for nothing. '
+        '&ldquo;Alone&rdquo; below is how often a gate was the only reason a document '
+        'was routed; a gate that never fires alone changes no decisions.</p>'
+        '<div class="scroll"><table><thead><tr><th>gate</th><th class="r">fired</th>'
+        '<th class="r">alone</th><th class="r">mean outcome</th></tr></thead>'
+        f'<tbody>{body}</tbody></table></div></section>')
+
+
+def repair_panel(data, label: str) -> str:
+    """Both arms, the paired interval, and the warning carried through to the page."""
+    if not data or not data.get("arms"):
+        return ""
+    arms = data["arms"]
+    harmful = [n for n, r in arms.items()
+               if r.get("documents") and (r.get("net_delta") or 0) < 0]
+    body = ""
+    for name, row in arms.items():
+        if not row.get("documents"):
+            continue
+        net = row["net_delta"]
+        tone = "fail" if net < 0 else "pass"
+        body += (
+            f'<tr><td class="mono">{esc(name)}'
+            f'{" <span style=\"color:var(--ink-faint)\">baseline</span>" if name == "rerun" else ""}'
+            f'</td>'
+            f'<td class="mono r">{row["documents"]}</td>'
+            f'<td class="mono r">{num(row["accuracy_before"])}</td>'
+            f'<td class="mono r">{num(row["accuracy_after"])}</td>'
+            f'<td class="mono r" style="color:var(--{tone});font-weight:700">'
+            f'{net:+.3f}</td>'
+            f'<td class="mono r">{row["improved"]}</td>'
+            f'<td class="mono r" style="color:var(--fail)">{row["damaged"]}</td>'
+            f'<td class="mono r">{row["gates_clear"]}</td></tr>')
+
+    banner = ""
+    if harmful:
+        banner = (
+            '<p class="prose" style="background:var(--fail-tint);color:var(--fail-ink);'
+            'padding:10px 12px;border-radius:var(--r);font-weight:600;max-width:none">'
+            f'NET-NEGATIVE: {esc(", ".join(harmful))} left documents worse than they '
+            'were found. Repair is optional; an arm scoring below zero should be off.'
+            '</p>')
+
+    verdict = ""
+    for name, pair in (data.get("paired") or {}).items():
+        if pair.get("mean") is None:
+            continue
+        low, high = pair["interval"]
+        settled = ("The interval excludes zero." if pair["resolvable"]
+                   else "The interval does not exclude zero &mdash; this has been "
+                        "observed once, not measured.")
+        caveat = ("" if not harmful else
+                  " But both arms are net-negative here, so this is "
+                  "<strong>less harmful, not helpful</strong>.")
+        verdict = (
+            f'<p class="prose" style="margin-top:12px">{esc(name)} against the blind '
+            f're-run, paired over {pair["documents"]} documents: '
+            f'<span class="mono">{pair["mean"]:+.4f}</span>, 95% interval '
+            f'<span class="mono">[{low:+.4f}, {high:+.4f}]</span>. Better on '
+            f'{pair["better"]}, worse on {pair["worse"]}, tied on {pair["tied"]}. '
+            f'{settled}{caveat}</p>')
+
+    return (
+        f'<section class="card{" finding" if harmful else ""}">'
+        f'<div class="card-head"><h2>Repair &mdash; {esc(label)}</h2>'
+        '<span class="hint">scored against the corpus, never against the gates</span>'
+        '</div>'
+        f'{banner}'
+        '<p class="prose">The extractor is sampled, so a second request improves some '
+        'documents by luck. The blind arm re-asks the identical question and prices '
+        'that; anything the guided arm is worth is the distance between them.</p>'
+        '<div class="scroll"><table><thead><tr><th>arm</th><th class="r">n</th>'
+        '<th class="r">before</th><th class="r">after</th><th class="r">net</th>'
+        '<th class="r">better</th><th class="r">worse</th>'
+        f'<th class="r">gates cleared</th></tr></thead><tbody>{body}</tbody></table>'
+        f'</div>{verdict}</section>')
+
+
+GATE_SPECS = (
+    # signal, direction, setting, label, min, max, step
+    ("classifier_confidence", "below", "classifier_floor",
+     "classifier confidence floor", 0.0, 1.0, 0.01),
+    ("blank_share", "above", "blank_share_ceiling",
+     "blank field share ceiling", 0.0, 1.0, 0.01),
+    ("validator_errors", "above", "validator_errors_ceiling",
+     "validator errors ceiling", -1, 5, 1),
+    ("ocr_confidence", "below", "ocr_confidence_floor",
+     "OCR confidence floor", 0.0, 1.0, 0.01),
+    ("words_per_page", "below", "words_floor",
+     "words per page floor", 0, 400, 5),
+)
+
+
+def _apply_policy(rows, thresholds):
+    """The routing policy, in Python, over the dumped rows.
+
+    Deliberately a second implementation of `route.policy.Policy.decide`, and that is a
+    risk this project has been bitten by more than once -- two implementations of one
+    decision that disagree without either looking wrong. It exists so the page can be
+    checked against the real thing: the numbers it produces at the manifest's own
+    thresholds are embedded, and the browser recomputes them and says so if they differ.
+    A duplicate you can detect is a different thing from one you cannot.
+    """
+    accepted, reviewed = [], []
+    for row in rows:
+        fired = 0
+        for signal, direction, setting, _label, _lo, _hi, _step in GATE_SPECS:
+            threshold = thresholds.get(setting)
+            if threshold is None:
+                continue
+            enabled = (threshold >= 0 if setting == "validator_errors_ceiling"
+                       else threshold > 0)
+            if not enabled:
+                continue
+            value = row["signals"].get(signal)
+            if value is None:
+                continue
+            if (value > threshold if direction == "above" else value < threshold):
+                fired += 1
+        (reviewed if fired else accepted).append(row)
+    total = len(rows) or 1
+    return {
+        "accepted": len(accepted),
+        "reviewed": len(reviewed),
+        "coverage": round(len(accepted) / total, 4),
+        "accuracy_accepted": (round(sum(r["outcome"] for r in accepted)
+                                    / len(accepted), 4) if accepted else None),
+        "baseline": round(sum(r["outcome"] for r in rows) / total, 4),
+        "reviewed_but_perfect": sum(1 for r in reviewed if r["outcome"] >= 1.0),
+    }
+
+
+def explorer_panel(datasets, config_thresholds) -> str:
+    """Move the thresholds, and watch what they cost -- over measurements already taken.
+
+    This is the one interactive thing on the page, and the line it sits on is worth
+    stating: it re-reads measurements, it never re-runs a model. Every document here was
+    already extracted, already scored against the corpus, and already had its signals
+    computed. Changing a threshold is arithmetic over that, which is why it answers in
+    milliseconds and cannot invent anything.
+
+    A button that started an extraction would be a worse CLI with a spinner -- hours
+    long, needing a GPU and a key, and producing provenance a browser is the wrong place
+    to record. The expensive half stays a deliberate command. Only the deciding is
+    interactive.
+    """
+    usable = [(name, data) for name, data in datasets if data and data.get("rows")]
+    if not usable:
+        return missing(
+            "Operating point",
+            "python -m eval.cli signals --predictions reports/degraded-full.jsonl "
+            "--corpus data/degraded --rows reports/rows-degraded.json",
+            "No per-document rows were found, so the thresholds cannot be moved "
+            "against anything.")
+
+    payload = {
+        "datasets": {name: {"rows": data["rows"]} for name, data in usable},
+        "gates": [{"signal": g[0], "direction": g[1], "setting": g[2], "label": g[3],
+                   "min": g[4], "max": g[5], "step": g[6]} for g in GATE_SPECS],
+        "manifest": config_thresholds,
+        # What Python computes at the manifest's own thresholds. The browser recomputes
+        # these and complains if it disagrees, which turns a duplicated policy into a
+        # detectable one.
+        "check": {name: _apply_policy(data["rows"], config_thresholds)
+                  for name, data in usable},
+    }
+
+    controls = ""
+    for signal, _direction, setting, label, low, high, step in GATE_SPECS:
+        value = config_thresholds.get(setting, 0)
+        controls += (
+            f'<div class="knob">'
+            f'<label for="k-{setting}">{esc(label)}</label>'
+            f'<input type="range" id="k-{setting}" data-setting="{setting}" '
+            f'min="{low}" max="{high}" step="{step}" value="{value}">'
+            f'<span class="value mono" id="v-{setting}">{value}</span>'
+            f'</div>')
+
+    tabs = "".join(
+        f'<button class="tab{" on" if index == 0 else ""}" '
+        f'data-set="{esc(name)}">{esc(name)}</button>'
+        for index, (name, _data) in enumerate(usable))
+
+    readout = "".join(
+        f'<div><div class="k">{label}</div><div class="v" id="{ident}">--</div></div>'
+        for label, ident in (("ACCEPTED", "x-coverage"),
+                             ("ACCURACY ACCEPTED", "x-accuracy"),
+                             ("AT RANDOM", "x-baseline"),
+                             ("LIFT", "x-lift"),
+                             ("SENT TO REVIEW", "x-reviewed"),
+                             ("REVIEWED BUT PERFECT", "x-perfect")))
+
+    return (
+        '<section class="card">'
+        '<div class="card-head"><h2>Operating point</h2>'
+        '<span class="hint">re-reads measurements &middot; never re-runs a model</span>'
+        '</div>'
+        '<p class="prose">Every document below was already extracted, scored against '
+        'the corpus, and had its signals computed. Moving a threshold is arithmetic '
+        'over that, so it answers instantly and cannot invent anything &mdash; and the '
+        'expensive half stays a command you run deliberately.</p>'
+        f'<div class="tabs">{tabs}</div>'
+        f'<div class="knobs">{controls}</div>'
+        f'<div class="readout">{readout}</div>'
+        '<div id="x-warning"></div>'
+        '<div class="card-head" style="margin:20px 0 10px"><h2>Which gates fire</h2>'
+        '</div>'
+        '<div class="scroll"><table><thead><tr><th>gate</th><th class="r">fired</th>'
+        '<th class="r">alone</th><th class="r">mean outcome</th></tr></thead>'
+        '<tbody id="x-gates"></tbody></table></div>'
+        '<div class="card-head" style="margin:20px 0 10px"><h2>For di.toml</h2></div>'
+        '<pre class="command" id="x-toml"></pre>'
+        f'<script id="x-data" type="application/json">{json.dumps(payload)}</script>'
+        '</section>')
+
+
 # -------------------------------------------------------------------------- page
 
 STYLE = """
@@ -441,6 +770,37 @@ td.mono, th.mono { font-family: var(--mono); }
 }
 .finding table { margin-top: 12px; }
 
+.tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+.tab {
+  font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  padding: 5px 12px; border-radius: var(--r-pill);
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--ink-muted);
+}
+.tab.on { background: var(--accent-tint); border-color: var(--accent-edge);
+          color: var(--accent-press); }
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.knobs {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px 20px; padding: 14px; background: var(--surface-sunken);
+  border: 1px solid var(--border); border-radius: var(--r);
+}
+.knob { display: flex; align-items: center; gap: 10px; }
+.knob label {
+  font-size: 10px; letter-spacing: .8px; font-weight: 700; color: var(--ink-faint);
+  flex: 0 0 128px; text-transform: uppercase;
+}
+.knob input[type=range] { flex: 1; accent-color: var(--accent); min-width: 70px; }
+.knob .value {
+  font-size: 12px; font-weight: 700; min-width: 42px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.mismatch {
+  margin-top: 14px; padding: 10px 12px; border-radius: var(--r);
+  background: var(--fail-tint); color: var(--fail-ink);
+  font-size: 12px; font-weight: 600;
+}
 .legend {
   display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px;
   font-size: 10.5px; color: var(--ink-faint);
@@ -454,6 +814,158 @@ td.mono, th.mono { font-family: var(--mono); }
   font-size: 10.5px; color: var(--ink-faint); font-family: var(--mono);
   line-height: 1.8;
 }
+"""
+
+EXPLORER_JS = """
+(function () {
+  var node = document.getElementById('x-data');
+  if (!node) return;
+  var data = JSON.parse(node.textContent);
+  var current = Object.assign({}, data.manifest);
+  var active = Object.keys(data.datasets)[0];
+
+  function enabled(setting, threshold) {
+    if (threshold === null || threshold === undefined) return false;
+    // Zero disables every gate except the validator one, where zero is the point:
+    // "more than zero errors" is exactly what a validator exists to find. This
+    // asymmetry is in route/policy.py too, and it is the likeliest place the two
+    // implementations drift -- which is what the self-check below is for.
+    if (setting === 'validator_errors_ceiling') return threshold >= 0;
+    return threshold > 0;
+  }
+
+  function decide(row) {
+    var reasons = [];
+    for (var i = 0; i < data.gates.length; i++) {
+      var g = data.gates[i];
+      var t = current[g.setting];
+      if (!enabled(g.setting, t)) continue;
+      var v = row.signals[g.signal];
+      if (v === null || v === undefined) continue;   // missing is not bad
+      if (g.direction === 'above' ? v > t : v < t) reasons.push(g.signal);
+    }
+    return reasons;
+  }
+
+  function evaluate(rows) {
+    var accepted = [], reviewed = [], gates = {};
+    for (var i = 0; i < rows.length; i++) {
+      var reasons = decide(rows[i]);
+      for (var j = 0; j < reasons.length; j++) {
+        var g = gates[reasons[j]] || (gates[reasons[j]] =
+          { fired: 0, alone: 0, sum: 0 });
+        g.fired++; g.sum += rows[i].outcome;
+        if (reasons.length === 1) g.alone++;
+      }
+      (reasons.length ? reviewed : accepted).push(rows[i]);
+    }
+    var mean = function (xs) {
+      return xs.length ? xs.reduce(function (a, r) { return a + r.outcome; }, 0)
+        / xs.length : null;
+    };
+    return {
+      accepted: accepted.length, reviewed: reviewed.length,
+      coverage: rows.length ? accepted.length / rows.length : 0,
+      accuracy_accepted: mean(accepted),
+      baseline: mean(rows),
+      reviewed_but_perfect: reviewed.filter(function (r) {
+        return r.outcome >= 1; }).length,
+      gates: gates
+    };
+  }
+
+  var pct = function (v) { return v === null ? '--' : (v * 100).toFixed(1) + '%'; };
+  var set = function (id, text, colour) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+    if (colour) el.style.color = colour;
+  };
+
+  function paint() {
+    var rows = data.datasets[active].rows;
+    var out = evaluate(rows);
+    set('x-coverage', pct(out.coverage));
+    set('x-accuracy', pct(out.accuracy_accepted));
+    set('x-baseline', pct(out.baseline), 'var(--ink-faint)');
+    var lift = (out.accuracy_accepted === null || out.baseline === null)
+      ? null : out.accuracy_accepted - out.baseline;
+    set('x-lift', lift === null ? '--'
+      : (lift >= 0 ? '+' : '') + lift.toFixed(3),
+      lift === null ? 'var(--ink-faint)'
+        : lift > 0.005 ? 'var(--pass)' : 'var(--ink-muted)');
+    set('x-reviewed', String(out.reviewed));
+    set('x-perfect', String(out.reviewed_but_perfect));
+
+    var body = '';
+    var names = Object.keys(out.gates).sort(function (a, b) {
+      return out.gates[b].fired - out.gates[a].fired; });
+    for (var i = 0; i < names.length; i++) {
+      var g = out.gates[names[i]];
+      body += '<tr><td class="mono">' + names[i] + '</td>'
+        + '<td class="mono r">' + g.fired + '</td>'
+        + '<td class="mono r">' + g.alone + '</td>'
+        + '<td class="mono r">' + (g.sum / g.fired).toFixed(3) + '</td></tr>';
+    }
+    document.getElementById('x-gates').innerHTML = body
+      || '<tr><td colspan="4" style="color:var(--ink-faint)">'
+         + 'no gate fires; every document is accepted</td></tr>';
+
+    var toml = '[routers.policy]\n';
+    for (var k = 0; k < data.gates.length; k++) {
+      var gate = data.gates[k];
+      toml += gate.setting + ' = ' + current[gate.setting] + '\n';
+    }
+    document.getElementById('x-toml').textContent = toml;
+  }
+
+  function selfCheck() {
+    // The page reimplements route/policy.py in JavaScript, which is how two
+    // implementations of one decision come to disagree without either looking wrong.
+    // Python's answer at the manifest's own thresholds is embedded; recompute it here
+    // and say so loudly on any difference, rather than letting the page quietly
+    // describe a policy the pipeline does not run.
+    var problems = [];
+    var saved = current;
+    current = Object.assign({}, data.manifest);
+    Object.keys(data.check).forEach(function (name) {
+      var want = data.check[name];
+      var got = evaluate(data.datasets[name].rows);
+      if (got.accepted !== want.accepted || got.reviewed !== want.reviewed) {
+        problems.push(name + ': this page says ' + got.accepted + ' accepted, the '
+          + 'scorer says ' + want.accepted);
+      }
+    });
+    current = saved;
+    if (problems.length) {
+      document.getElementById('x-warning').innerHTML =
+        '<div class="mismatch">This panel disagrees with route/policy.py &mdash; '
+        + problems.join('; ') + '. Trust the command, not this page, and fix the '
+        + 'duplication.</div>';
+    }
+  }
+
+  document.querySelectorAll('.knob input[type=range]').forEach(function (input) {
+    input.addEventListener('input', function () {
+      var value = Number(input.value);
+      current[input.dataset.setting] = value;
+      document.getElementById('v-' + input.dataset.setting).textContent = value;
+      paint();
+    });
+  });
+  document.querySelectorAll('.tab').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      document.querySelectorAll('.tab').forEach(function (t) {
+        t.classList.remove('on'); });
+      tab.classList.add('on');
+      active = tab.dataset.set;
+      paint();
+    });
+  });
+
+  selfCheck();
+  paint();
+})();
 """
 
 SCRIPT = """
@@ -513,10 +1025,32 @@ SCRIPT = """
 
 
 def build(reports_dir: str, out_path: str) -> str:
-    design = load(os.path.join(reports_dir, "calibration-dit-template.json"))
+    # The cascade's own calibration when it exists, because the cascade is what runs.
+    # Falling back to the primary's is better than an empty page and worse than the
+    # truth, so the page says which one it is showing rather than leaving the reader to
+    # assume the number governs the pipeline.
+    cascade = load(os.path.join(reports_dir, "calibration-cascade-template.json"))
+    design = cascade or load(os.path.join(reports_dir,
+                                          "calibration-dit-template.json"))
+    measured_on = "cascade" if cascade else "dit"
     source = load(os.path.join(reports_dir, "calibration-dit-source.json"))
     score = load(os.path.join(reports_dir, "report.json"))
     run = load(os.path.join(reports_dir, "v1-predicted-type.run.json"))
+    signals = load(os.path.join(reports_dir, "signals-degraded.json"))
+    extraction = load(os.path.join(reports_dir, "calibration-extraction.json"))
+    routing = [("degraded corpus",
+                load(os.path.join(reports_dir, "routing-degraded.json"))),
+               ("clean corpus",
+                load(os.path.join(reports_dir, "routing-clean.json")))]
+    rows_data = [("degraded corpus",
+                  load(os.path.join(reports_dir, "rows-degraded.json"))),
+                 ("clean corpus",
+                  load(os.path.join(reports_dir, "rows-clean.json")))]
+    repairs = [("degraded corpus",
+                load(os.path.join(reports_dir, "repair-degraded-v2.json"))
+                or load(os.path.join(reports_dir, "repair-degraded.json"))),
+               ("clean corpus",
+                load(os.path.join(reports_dir, "repair-clean-63.json")))]
 
     parts = []
 
@@ -570,7 +1104,7 @@ def build(reports_dir: str, out_path: str) -> str:
         parts.append(
             '<section class="card">'
             '<div class="card-head"><h2>Where the confidence floor goes</h2>'
-            '<span class="hint">design holdout &middot; '
+            f'<span class="hint">design holdout &middot; {measured_on} &middot; '
             f'{design["documents"]} decisions</span></div>'
             '<p class="prose">Answer at or above the floor, send the rest to a person. '
             'The dashed line is what declining the same number of documents at random '
@@ -740,6 +1274,23 @@ def build(reports_dir: str, out_path: str) -> str:
             "python -m eval.cli score --predictions reports/predictions.jsonl",
             "No score report was found."))
 
+    # The thresholds, moved against measurements already taken. Placed above the
+    # findings because it is the only thing on the page a reader can act on.
+    from core import config as config_mod
+    from route.policy import Policy
+
+    thresholds = dict(config_mod.load().settings("router", "policy", Policy.SETTINGS))
+    parts.append(explorer_panel(rows_data, thresholds))
+
+    # The findings that reframe everything above them, in the order they were made.
+    parts.append(confound_panel(extraction))
+    parts.append(signals_panel(signals))
+    for label, data in routing:
+        parts.append(routing_panel(data, label))
+    for label, data in repairs:
+        parts.append(repair_panel(data, label))
+    parts = [p for p in parts if p]
+
     # ------------------------------------------------------------ provenance
     provenance = []
     if run:
@@ -820,6 +1371,7 @@ def build(reports_dir: str, out_path: str) -> str:
   </main>
 </div>
 <script>{SCRIPT}</script>
+<script>{EXPLORER_JS}</script>
 </body>
 </html>
 """

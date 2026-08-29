@@ -31,6 +31,7 @@ import os
 import sys
 
 from core import config as config_mod
+from core import stamp as stamp_mod
 from eval import calibration
 from eval import score as scoring
 from eval.report import ScoreReport
@@ -507,6 +508,11 @@ def main(argv=None):
                      help="skip re-running the rules, which is most of the runtime")
     sig.add_argument("--format", default="table", choices=["table", "json"])
     sig.add_argument("--out", default=None, help="where to write signals.json")
+    sig.add_argument("--rows", default=None,
+                     help="also write one row per document -- signals and outcome -- "
+                          "which is what an interactive threshold explorer needs. The "
+                          "aggregate report cannot answer 'what if the floor were "
+                          "0.3', because it has already averaged the documents away")
 
     args = parser.parse_args(argv)
     only = [s.strip() for s in args.only.split(",") if s.strip()] or None
@@ -514,7 +520,21 @@ def main(argv=None):
     if args.command == "signals":
         from eval import signals as signal_scoring
 
-        data = signal_scoring.report(signal_rows(args), args.coverage)
+        rows = signal_rows(args)
+        if args.rows:
+            os.makedirs(os.path.dirname(args.rows) or ".", exist_ok=True)
+            with open(args.rows, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump({
+                    "documents": len(rows),
+                    "corpus": args.corpus,
+                    "predictions": args.predictions,
+                    "rows": [{"file": r["file"], "doc_type": r["truth"],
+                              "profile": r["profile"], "outcome": r["outcome"],
+                              "signals": r["signals"]} for r in rows],
+                }, handle, indent=1)
+            print(f"  per-document rows written to {args.rows}")
+        data = signal_scoring.report(rows, args.coverage)
+        data["stamp"] = stamp_mod.stamp(args.corpus)
         if args.format == "json":
             sys.stdout.write(json.dumps(data, indent=1))
         else:
@@ -538,6 +558,7 @@ def main(argv=None):
                          "records what the type was, not what the fields came back as")
         score = observations(args)
         data = score.to_dict(args.target)
+        data["stamp"] = stamp_mod.stamp(args.corpus)
         if args.format == "json":
             sys.stdout.write(json.dumps(data, indent=1))
         else:

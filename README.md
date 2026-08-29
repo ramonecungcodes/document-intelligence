@@ -70,7 +70,7 @@ finishing it is knowing whether to continue.
 | **3** | Can it tell what a document *is*? Type moves from corpus-given to predicted, and the splitter handles files holding more than one document. | classification accuracy | done |
 | **4** | Can it tell when it is wrong? Validators: arithmetic that must foot, dates that must parse, cross-field constraints that must hold. | defect precision and recall | done |
 | **5** | Is its confidence real? Calibration from independent signals rather than model self-report, and routing what fails to a person. | a calibration curve | done |
-| **6** | Can it repair itself? The bounded repair loop and tool-using extraction — the agentic pockets, arriving last because everything before them is what makes them measurable. | repair success rate | |
+| **6** | Can it repair itself? The bounded repair loop and tool-using extraction — the agentic pockets, arriving last because everything before them is what makes them measurable. | repair success rate | repair loop done; tool use deferred |
 | **7** | Does teaching it work? Teach mode and the run queue as one screen, with the knowledge pack accumulating corrections, layout profiles and learned validators. | a learning curve | |
 
 Two consequences of this order are visible in the code and worth naming.
@@ -280,6 +280,60 @@ and uneven lighting are recovered by docTR's detector and lost by Tesseract's.
 **Faxes are not recoverable.** `0.305`, and no prompting fixes characters OCR never
 produced. The right system response is confidence routing to a person, and knowing
 where that threshold sits is what this phase bought.
+
+### Revisited after Phase 6: the engine choice was worth more than the loop
+
+The table above ranked two engines on the cohort as it stood then. Phase 6 built the
+machinery to compare two systems *properly* -- paired per document, resampled over
+source pages -- and it was worth pointing that machinery back at this decision, with a
+third engine added.
+
+Three engines, the identical 75 documents, identical model and prompts. Only the engine
+varies. `tools/compare-ocr-engines.py` reproduces it.
+
+| engine | all | fax | light | photo |
+|---|---|---|---|---|
+| docTR (incumbent) | `0.657` | `0.285` | `0.902` | `0.826` |
+| PaddleOCR PP-OCRv5 | `0.653` | `0.248` | `0.892` | `0.878` |
+| **PaddleOCR PP-OCRv6** | **`0.702`** | **`0.336`** | **`0.925`** | **`0.897`** |
+
+Those are three separate numbers per row and the difference between two of them carries
+no interval, which is exactly the mistake this project keeps finding in its own work. The
+comparison that means something is paired, because every engine read the same page:
+
+| comparison | delta | interval | |
+|---|---|---|---|
+| PP-OCRv6 vs docTR, all | **`+0.052`** | [+0.022, +0.088] | resolvable |
+| PP-OCRv6 vs docTR, fax | **`+0.058`** | [+0.018, +0.099] | resolvable |
+| PP-OCRv6 vs docTR, photo | **`+0.077`** | [+0.005, +0.152] | resolvable |
+| PP-OCRv6 vs docTR, light | `+0.031` | [-0.008, +0.077] | spans zero |
+| PP-OCRv5 vs docTR, all | `-0.000` | [-0.037, +0.036] | spans zero |
+
+**PP-OCRv5 was not worth switching to.** Dead level with docTR at `-0.0001` -- better on
+photographs, worse on faxes, neither resolvable. It looked promising on an unpaired
+glance at aggregate numbers, which is the comparison that carries no interval.
+
+**PP-OCRv6 is, and it wins where the accuracy actually is.** Resolvably better on fax and
+photo, the two profiles that were breaking the pipeline, and not resolvable on `light`
+where all three engines are already above `0.89` and there is nothing left to win. A gain
+concentrated on the hard profiles and absent on the easy one is the right shape for an
+engine difference; the reverse would suggest measurement noise.
+
+One caveat belongs beside the number. There is no same-engine control arm here, so this
+delta is *the engine plus one sample of extractor noise*. Phase 6 sized that noise
+directly -- a blind re-run of the identical request on degraded documents moved accuracy
+by `-0.010` -- and the gain here is five times that, on 28 documents better against 9
+worse. It survives the caveat. It is not free of it.
+
+**The comparison against Phase 6 is the point.** Perfect selection of which documents to
+repair -- the most interesting question that phase left open -- is worth `+0.003`.
+Changing one line in the manifest is worth `+0.052`. The loop was the harder engineering
+and the smaller number, and only a paired comparison makes those two commensurable enough
+to say so.
+
+The engine has not been switched here. That is a corpus-wide re-normalisation and every
+downstream number in this README was measured through docTR; changing it silently would
+invalidate the lot. It is Phase 7's first task, and this is the evidence for it.
 
 ### The optimisation that cost 31 points
 
@@ -786,6 +840,171 @@ The equivalent on degraded documents needs a re-run.
 
 **Nothing consumes the queue.** `route.cli apply` writes it; no interface reads it, and
 no correction flows back. That is Phase 7.
+
+## Phase 6: can it repair itself
+
+The phase asks whether a second attempt at a document helps. The answer depends
+entirely on whether the second attempt is anchored to the first — and the phase spent
+most of its effort discovering that its own instruments were lying to it.
+
+### The scorer was written first, and adversarially
+
+Repair is the first stage here that can raise its own score by making documents worse.
+It is triggered by complaints, so the obvious success metric is "did the complaints
+stop" — and the cheapest way to stop an arithmetic complaint is to return an empty
+`tax_amount`. Every dashboard would show it working.
+
+So `eval/repair.py` was written and committed before any loop existed. Success is
+measured against the corpus labels and never against the gates; gate clearance is
+reported *beside* the real number, because the distance between them is the diagnostic
+for a loop silencing its critics. `damaged` sits next to `improved` everywhere, with a
+Wilson interval, because a rate observed on forty documents is an estimate that reads
+like a fact. A crashed call leaves the document at `before`, never at zero — an outage
+must not read as a damaging loop.
+
+### Three arms, and the middle one is the point
+
+    no_repair    the original extraction, untouched
+    rerun        the IDENTICAL request again — no complaints, no previous answer
+    reprompt     the same request with the complaints quoted back
+
+`rerun` is what makes the phase measurable. The extractor is sampled, so a second
+request improves some documents by luck that *any* repair inherits for free. Without
+that arm, a guided repair reporting `+0.058` looks like the feedback working when much
+of it is sampling temperature.
+
+Every arm starts from the identical frozen extraction, so no extraction variance enters
+before the experiment starts. Guided arms iterate — attempt N sees attempt N-1's record
+and the complaints recomputed against it — and blind arms repeat the identical request.
+Arms are compared only at equal call budgets, because three guided attempts against one
+blind sample prices the extra sampling as though it were the guidance.
+
+### The result
+
+| corpus | baseline | blind vs nothing | guided vs nothing | guided vs blind |
+|---|---|---|---|---|
+| clean | `0.881` | **`+0.043`** [+0.024, +0.065] | **`+0.058`** [+0.039, +0.079] | `+0.015` spans zero |
+| degraded | `0.303` | **`-0.010`** [-0.019, -0.001] | `+0.002` spans zero | **`+0.012`** [+0.001, +0.023] |
+
+Read across the rows.
+
+**On clean documents a second pass helps, and it barely matters whether it is guided.**
+Both arms are resolvably better than doing nothing; the difference between them is not
+resolvable and would need about 356 documents to settle. Zero documents were damaged in
+either arm.
+
+**On degraded documents, blind resampling is harmful and guidance prevents that.** The
+blind arm is resolvably worse than not running at all. The guided arm is not
+distinguishable from doing nothing in either direction — it has *not* demonstrated
+positive lift — and it resolvably beats the blind arm. That last comparison is the only
+resolvable thing on that row.
+
+Stated carefully, because the loose version is tempting and wrong: repair is clearly
+beneficial on clean documents; on degraded documents blind retrying is harmful, guided
+repair avoids most of that damage, and guided repair has not been shown to help.
+
+### What the guidance actually does
+
+The field transitions say it more plainly than the deltas.
+
+| | fields repaired | fields damaged |
+|---|---|---|
+| clean, blind | 29 | **0** |
+| clean, guided | 34 | **0** |
+| degraded, blind | 20 | **52** |
+| degraded, guided | 7 | **5** |
+
+The blind arm on degraded documents *repairs nearly three times as many fields as the
+guided one*. Its problem is not that it cannot fix things — it is that it destroys 52 to
+do it, mostly correct values replaced with wrong ones (22) or dropped entirely (27).
+
+So the guidance's value is **conservation, not correction**. It does not make the model
+better at reading the page; it gives it a reason to keep the answer it already had. The
+sentence doing the work is probably not the complaint list but *"If, after re-reading,
+you believe your previous answer was right, return it unchanged."*
+
+That unifies the two rows. On clean text the answer is largely determined, so a second
+draw lands near the first and resampling converges. On ruined text the answer is
+underdetermined, the first answer was partly right by luck, and an independent draw
+discards that luck. **Resampling helps where the answer is determined and hurts where it
+is not** — a property of any loop that re-does work, not a fact about OCR.
+
+### The bug that produced a headline, and then removed it
+
+The first version of this section reported that repair invented `business_name` on 48 of
+48 eligible W-9s, in both arms — a hundred per cent failure on one field — and explained
+it as a named slot in a schema exerting more pressure on a second pass than an
+instruction not to fill it. It was written up as a result.
+
+It was a bug in the repair runner. Optional fields are asked as a *decision* rather than
+a slot: the model answers `{"status": ..., "value": ...}` and the extractor flattens that
+with `collapse_optional` before anything else sees it. The repair merge reimplemented
+merging and never called it, so a repaired record kept the dict, and the scorer comparing
+a dict against a blank truth read it as a fabricated value. Asked directly, the model had
+answered `"unclear"` on 47 of the 48. That collapses to absent. It was **correct**.
+
+Two optional fields exist in the entire schema registry. The transition table showed
+damage of exactly 48 and 5 — fifty-three, every one of the guided arm's inventions.
+
+Fixing it inverted the phase. Guided repair on degraded documents moved from `-0.029` to
+`+0.002` and from 56 damaged documents to 5. The Goodhart risk ratio — the headline
+diagnostic, "damaged documents were 4.43× more likely to have their gates go quiet" —
+became `1.638` with an interval of `[0.917, 2.924]`, spanning 1. The effect was almost
+entirely the bug.
+
+Three things worth keeping from it.
+
+**The per-field table found its own scorer's bug.** A document-level `-0.029` was
+unfalsifiable at that resolution and would have shipped. Only concentrating the damage
+into one field on one variant made it checkable, and obviously wrong once checked. The
+diagnostic built to catch the model gaming the metric caught the harness instead.
+
+**Two implementations of one rule, five times in one phase.** `repair.cli` against
+`route.cli` on which documents were flagged. The per-document scorer against the
+aggregate. The repair merge against the extractor's. A PaddleOCR detection region
+against a `Word`. And `--limit 15` today against `--limit 15` historically, which
+silently selected a different 75 documents. Every one was an implicit equivalence
+assumed rather than asserted; every one was plausible; none broke visibly.
+
+**A finding that concentrates suspiciously is a finding to check.** 48 of 48 is not what
+model behaviour looks like. It was written up instead of checked, and the check took
+ninety seconds.
+
+### What a corrected result is worth
+
+`core/stamp.py` now writes provenance into every report, because twice in this phase the
+expensive part of a bug was not fixing it but working out which artifacts had inherited
+it. Four things move independently and a hash of one says nothing about the others: the
+code, the *meaning* of the metric (a hand-bumped `evaluation_version`, since a commit
+says the code differed and not whether the difference mattered), the corpus in two senses
+— labels for "did the expected answers change" and document bytes for "did the system see
+different pixels" — and the cohort actually evaluated.
+
+The cohort hash earned itself immediately. Three different "75-document sets" are in
+circulation in this repository, overlapping each other on 1 and 52 documents. A
+comparison across two of them would have looked entirely normal.
+
+### What this phase did not close
+
+**Tool-using extraction was not built.** The phase's wording covers the bounded repair
+loop *and* tool use; only the loop exists, and the loop is what produces the phase's
+stated number. On this corpus a tool would likely buy little: the dominant failures are
+perceptual — fax OCR at `0.305`, characters that were never produced — and
+schema-comprehension, not arithmetic, and the validators already detect the arithmetic.
+
+**Selection is the strongest remaining question and the smallest remaining prize.** With
+an oracle choosing which documents to repair, guided repair on degraded documents would
+move from `+0.0022` to `+0.0050` — the entire ceiling is not damaging five fields across
+two hundred documents. As a research question — can you predict when generative revision
+has positive expected value, from features available *before* revision — it is genuinely
+interesting and portable. As an accuracy lever on this corpus it is worth three tenths of
+a point, against `+0.315` for choosing a better OCR engine on photographs.
+
+**Where the accuracy actually is.** Fields the extractor never reads in either direction:
+`business_name` scored 0 of 12 where the document carried one, `target_role` reaches
+`0.086`. Those are schema and prompt problems, and they are worth more than any
+refinement of repair.
+
 
 ## Why the corpus comes first
 
